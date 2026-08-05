@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
-const CALLOUT_STEP = 1; // Step index where app speaks callout
-const SIREN_STEP = 2;   // Step index where siren auto-fires (0-based)
-const BEAT_STEP = 4;    // Last step: CPR metronome
+const CALLOUT_STEP = 1;
+const SIREN_STEP = 2;
+const BEAT_STEP = 4;
 
 const STEPS = [
   {
@@ -23,7 +23,7 @@ const STEPS = [
     spoken: "大丈夫ですか！　大丈夫ですか！　返事はありますか！",
     duration: 6,
     siren: false,
-    callOut: true, // app speaks the callout loudly
+    callOut: true,
   },
   {
     emoji: "🔊",
@@ -31,7 +31,7 @@ const STEPS = [
     text: "アプリが呼びかけています\nあなたはその場を離れないで",
     spoken: "あなたはそこを離れないで！　百十九番に通報してください！　エーイーディーを持ってきてください！",
     duration: 8,
-    siren: true, // auto-play siren
+    siren: true,
   },
   {
     emoji: "🤲",
@@ -78,6 +78,7 @@ function createSiren(audioCtx: AudioCtxType): () => void {
 
 export default function CPRPage() {
   const router = useRouter();
+  const [started, setStarted] = useState(false);
   const [step, setStep] = useState(0);
   const [beat, setBeat] = useState(false);
   const [sirenActive, setSirenActive] = useState(false);
@@ -96,6 +97,21 @@ export default function CPRPage() {
     return audioCtxRef.current;
   }, []);
 
+  // Tap-to-start: unlock AudioContext + SpeechSynthesis within user gesture
+  const handleStart = useCallback(() => {
+    const ctx = getAudioCtx();
+    if (ctx?.state === "suspended") ctx.resume();
+
+    // iOS Safari requires speak() to be called inside a user gesture to unlock
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      const unlock = new SpeechSynthesisUtterance(" ");
+      unlock.volume = 0;
+      window.speechSynthesis.speak(unlock);
+    }
+
+    setStarted(true);
+  }, [getAudioCtx]);
+
   const stopSiren = useCallback(() => {
     if (sirenStopRef.current) { sirenStopRef.current(); sirenStopRef.current = null; }
     setSirenActive(false);
@@ -110,23 +126,32 @@ export default function CPRPage() {
     u.rate = loud ? 0.75 : 0.85;
     u.pitch = loud ? 1.3 : 1.05;
     u.volume = 1;
-    const voices = window.speechSynthesis.getVoices();
-    const jaVoice = voices.find((v) => v.lang.startsWith("ja"));
-    if (jaVoice) u.voice = jaVoice;
-    window.speechSynthesis.speak(u);
+
+    const doSpeak = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const jaVoice = voices.find((v) => v.lang.startsWith("ja"));
+      if (jaVoice) u.voice = jaVoice;
+      window.speechSynthesis.speak(u);
+    };
+
+    // getVoices() is async on first load — wait for voiceschanged if empty
+    if (window.speechSynthesis.getVoices().length === 0) {
+      window.speechSynthesis.addEventListener("voiceschanged", doSpeak, { once: true });
+    } else {
+      doSpeak();
+    }
   }, []);
 
-  // Step logic
+  // Step logic — only runs after started
   useEffect(() => {
+    if (!started) return;
     const s = STEPS[step];
     if (!s) return;
 
-    // Stop siren when leaving siren step
     if (step !== SIREN_STEP) stopSiren();
 
     speak(s.spoken, !!("callOut" in s && s.callOut));
 
-    // Auto-start siren at siren step
     if (s.siren) {
       const ctx = getAudioCtx();
       if (ctx) {
@@ -140,7 +165,7 @@ export default function CPRPage() {
       timerRef.current = setTimeout(() => setStep((p) => p + 1), s.duration * 1000);
     }
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
-  }, [step, speak, stopSiren, getAudioCtx]);
+  }, [step, started, speak, stopSiren, getAudioCtx]);
 
   // Screen flash when siren is active
   useEffect(() => {
@@ -151,15 +176,14 @@ export default function CPRPage() {
 
   // Pulse animation for callout step
   useEffect(() => {
-    if (step !== CALLOUT_STEP) return;
-    // Reuse beat state for pulse effect (every ~900ms = speech rhythm)
+    if (!started || step !== CALLOUT_STEP) return;
     const id = setInterval(() => setBeat((b) => !b), 900);
     return () => clearInterval(id);
-  }, [step]);
+  }, [step, started]);
 
   // CPR metronome (last step)
   useEffect(() => {
-    if (step !== BEAT_STEP) {
+    if (!started || step !== BEAT_STEP) {
       if (intervalRef.current) clearInterval(intervalRef.current);
       return;
     }
@@ -188,18 +212,49 @@ export default function CPRPage() {
     }, 273);
 
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [step, getAudioCtx]);
-
-  const isCalloutStep = step === CALLOUT_STEP;
-  const isSirenStep = step === SIREN_STEP;
-  const isBeatStep = step === BEAT_STEP;
-  const current = STEPS[step]!;
+  }, [step, started, getAudioCtx]);
 
   const advance = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
     stopSiren();
     setStep((s) => Math.min(s + 1, STEPS.length - 1));
   }, [stopSiren]);
+
+  // ── Tap-to-start screen ──────────────────────────────────────────
+  if (!started) {
+    return (
+      <div
+        className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center gap-6 px-6"
+        onClick={handleStart}
+      >
+        <div className="text-7xl animate-pulse">🔊</div>
+        <p className="font-black text-2xl text-center leading-tight">
+          タップして<br />音声ガイドを開始
+        </p>
+        <p className="text-gray-400 text-sm text-center">
+          音声・サイレン・メトロノームが<br />自動で流れます
+        </p>
+        <button
+          className="mt-2 bg-orange-600 py-4 px-12 rounded-2xl font-bold text-lg shadow-[0_0_30px_rgba(234,88,12,0.5)] active:scale-95 transition-transform"
+          onClick={handleStart}
+        >
+          開始する
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); router.back(); }}
+          className="text-gray-600 text-sm mt-4"
+        >
+          戻る
+        </button>
+      </div>
+    );
+  }
+
+  // ── Main CPR guide ───────────────────────────────────────────────
+  const isCalloutStep = step === CALLOUT_STEP;
+  const isSirenStep = step === SIREN_STEP;
+  const isBeatStep = step === BEAT_STEP;
+  const current = STEPS[step]!;
 
   return (
     <div
@@ -239,7 +294,6 @@ export default function CPRPage() {
       {/* Main */}
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-4">
 
-        {/* Callout visual — app speaks 大丈夫ですか？ */}
         {isCalloutStep ? (
           <div className="flex flex-col items-center mb-4">
             <div
@@ -318,7 +372,6 @@ export default function CPRPage() {
 
       {/* Controls */}
       <div className="px-4 pb-8 space-y-2">
-        {/* 119ボタン — 胸骨圧迫中も常に表示 */}
         {isBeatStep && (
           <a
             href="tel:119"
