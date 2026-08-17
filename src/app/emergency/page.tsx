@@ -13,39 +13,6 @@ const AEDMap = dynamic(() => import("@/components/AEDMap"), { ssr: false });
 const DEFAULT_POS = { lat: 35.670599, lng: 139.77201 };
 const RANK_COLORS = ["#ef4444", "#f97316", "#3b82f6"];
 
-const EMERGENCY_RESPONDERS: ResponderMarker[] = [
-  {
-    id: "dr-1",
-    name: "Dr.相山 (救急科)",
-    role: "doctor",
-    badge: "👨‍⚕️ 医師認証済",
-    lat: 35.6712,
-    lng: 139.7711,
-    status: "現場直行中 (約40m)",
-    task: "胸骨圧迫・現場救命指揮",
-  },
-  {
-    id: "nurse-1",
-    name: "ナース鈴木",
-    role: "nurse",
-    badge: "👩‍⚕️ 看護師認証済",
-    lat: 35.6698,
-    lng: 139.7729,
-    status: "第1位AEDへ急行中",
-    task: "最寄りAED確保・現場搬送",
-  },
-  {
-    id: "paramedic-1",
-    name: "消防指令・救急隊",
-    role: "responder",
-    badge: "🚑 指令中枢連動",
-    lat: 35.6725,
-    lng: 139.7738,
-    status: "119自動連携・出動完了",
-    task: "通報・誘導支援",
-  },
-];
-
 export default function EmergencyPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<"locating" | "ready">("locating");
@@ -56,7 +23,10 @@ export default function EmergencyPage() {
   const [called119, setCalled119] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [gpsLoading, setGpsLoading] = useState(false);
-  const [demoActive, setDemoActive] = useState(true);
+
+  // Backend Responders State
+  const [responders, setResponders] = useState<ResponderMarker[]>([]);
+  const [dispatchStatus, setDispatchStatus] = useState<string>("医療従事者自動アサイン中…");
   const startTime = useRef(Date.now());
 
   useEffect(() => {
@@ -64,7 +34,47 @@ export default function EmergencyPage() {
     return () => clearInterval(id);
   }, []);
 
-  // Load AED data, start with default position
+  // Trigger Backend Dispatch API on emergency page load
+  const triggerBackendDispatch = useCallback(async (lat: number, lng: number) => {
+    try {
+      const res = await fetch("/api/emergency/dispatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userLat: lat, userLng: lng }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.responders) {
+          setResponders(
+            data.responders.map((r: {
+              id: string;
+              name: string;
+              role: "doctor" | "nurse" | "responder";
+              badge: string;
+              lat: number;
+              lng: number;
+              status: string;
+              task: string;
+            }) => ({
+              id: r.id,
+              name: r.name,
+              role: r.role,
+              badge: r.badge,
+              lat: r.lat,
+              lng: r.lng,
+              status: r.status,
+              task: r.task,
+            }))
+          );
+          setDispatchStatus("近隣の登録医療従事者3名に自動出動通知＆タスク配信完了");
+        }
+      }
+    } catch {
+      // Graceful fallback
+    }
+  }, []);
+
+  // Load AED data and trigger dispatch
   useEffect(() => {
     fetch("/api/aed")
       .then((r) => r.json())
@@ -73,8 +83,9 @@ export default function EmergencyPage() {
         setAeds(list);
         setTopAEDs(findTopAEDs(DEFAULT_POS.lat, DEFAULT_POS.lng, list, 3));
         setPhase("ready");
+        triggerBackendDispatch(DEFAULT_POS.lat, DEFAULT_POS.lng);
       });
-  }, []);
+  }, [triggerBackendDispatch]);
 
   const getGPS = useCallback(() => {
     if (!navigator.geolocation) return;
@@ -86,11 +97,12 @@ export default function EmergencyPage() {
         setTopAEDs(findTopAEDs(pos.lat, pos.lng, aeds, 3));
         setActiveRank(1);
         setGpsLoading(false);
+        triggerBackendDispatch(pos.lat, pos.lng);
       },
       () => setGpsLoading(false),
       { timeout: 8000 }
     );
-  }, [aeds]);
+  }, [aeds, triggerBackendDispatch]);
 
   const handle119 = useCallback(() => {
     setCalled119(true);
@@ -109,39 +121,29 @@ export default function EmergencyPage() {
           <div>
             <p className="font-bold text-base leading-tight">緊急モード起動中</p>
             <p className="text-red-100 text-xs">
-              {phase === "locating" ? "AEDデータを取得中…" : "中央区 · 近隣医療従事者へ同時タスク要請済"}
+              {phase === "locating" ? "AEDデータを取得中…" : "中央区 · 最寄りAED TOP3特定"}
             </p>
           </div>
         </div>
-        <div className="text-right flex items-center gap-2">
-          <button
-            onClick={() => setDemoActive(!demoActive)}
-            className="text-[11px] bg-red-800 border border-red-400/40 text-white px-2 py-1 rounded-lg font-bold"
-          >
-            {demoActive ? "デモ表示中" : "デモON"}
-          </button>
-          <div>
-            <p className="text-red-200 text-[10px]">経過時間</p>
-            <p className="font-bold text-lg tabular-nums leading-none">{fmt(elapsed)}</p>
-          </div>
+        <div className="text-right">
+          <p className="text-red-200 text-[10px]">経過時間</p>
+          <p className="font-bold text-lg tabular-nums leading-none">{fmt(elapsed)}</p>
         </div>
       </div>
 
-      {/* Backend Emergency Dispatch Banner */}
-      {demoActive && (
-        <div className="bg-purple-950 border-b border-purple-800 px-4 py-2.5 flex items-center justify-between text-xs">
-          <div className="flex items-center gap-2">
-            <span className="animate-ping text-purple-400 text-sm">📡</span>
-            <div>
-              <p className="font-bold text-purple-200">【バックエンド自動出動指示連動】</p>
-              <p className="text-[11px] text-purple-300">近隣登録医師・看護師 3名へ自動通知&タスク配分中</p>
-            </div>
+      {/* Real-time Automated Dispatch Status Banner */}
+      <div className="bg-purple-950 border-b border-purple-800 px-4 py-2 flex items-center justify-between text-xs">
+        <div className="flex items-center gap-2">
+          <span className="animate-ping text-purple-400 text-sm">📡</span>
+          <div>
+            <p className="font-bold text-purple-200">【自動ディスパッチ連動中】</p>
+            <p className="text-[11px] text-purple-300">{dispatchStatus}</p>
           </div>
-          <span className="text-[10px] bg-purple-800 text-purple-200 px-2 py-0.5 rounded-full font-bold">
-            自動割り当て中
-          </span>
         </div>
-      )}
+        <span className="text-[10px] bg-purple-800 text-purple-200 px-2 py-0.5 rounded-full font-bold">
+          自動出動中
+        </span>
+      </div>
 
       {/* Map — large */}
       <div className="relative flex-shrink-0" style={{ height: 320 }}>
@@ -159,7 +161,7 @@ export default function EmergencyPage() {
               userLat={userPos.lat}
               userLng={userPos.lng}
               topAEDs={topAEDs}
-              responders={demoActive ? EMERGENCY_RESPONDERS : []}
+              responders={responders}
             />
             {/* GPS button — floating on map */}
             <button

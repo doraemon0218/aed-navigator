@@ -1,51 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import type { AEDLocation } from "@/app/api/aed/route";
 import { findTopAEDs, type RankedAED } from "@/lib/distance";
-import type { ResponderMarker } from "@/components/AEDMap";
-import DoctorAuthModal from "@/components/DoctorAuthModal";
 
 const AEDMap = dynamic(() => import("@/components/AEDMap"), { ssr: false });
 
 // Demo default: 中央区庁舎
 const DEFAULT_POS = { lat: 35.670599, lng: 139.77201 };
-
-// Default responders fallback array
-const INITIAL_RESPONDERS: ResponderMarker[] = [
-  {
-    id: "dr-1",
-    name: "Dr.相山 (救急科)",
-    role: "doctor",
-    badge: "👨‍⚕️ 医師認証済",
-    lat: 35.6712,
-    lng: 139.7711,
-    status: "現場直行中 (残り40m)",
-    task: "胸骨圧迫・現場救命指揮",
-  },
-  {
-    id: "nurse-1",
-    name: "ナース鈴木",
-    role: "nurse",
-    badge: "👩‍⚕️ 看護師認証済",
-    lat: 35.6698,
-    lng: 139.7729,
-    status: "第1位AEDへ移動中",
-    task: "最寄りAED確保・現場搬送",
-  },
-  {
-    id: "paramedic-1",
-    name: "消防指令・救急隊",
-    role: "responder",
-    badge: "🚑 指令中枢連動",
-    lat: 35.6728,
-    lng: 139.7738,
-    status: "119自動連携・出動中",
-    task: "通報・誘導支援",
-  },
-];
 
 export default function DailyPage() {
   const router = useRouter();
@@ -55,16 +19,6 @@ export default function DailyPage() {
   const [loading, setLoading] = useState(true);
   const [gpsLoading, setGpsLoading] = useState(false);
   const [selected, setSelected] = useState<RankedAED | null>(null);
-  const [demoActive, setDemoActive] = useState(false);
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [dispatchToast, setDispatchToast] = useState(false);
-
-  // Python Backend AI calculation states
-  const [responders, setResponders] = useState<ResponderMarker[]>(INITIAL_RESPONDERS);
-  const [aiRecommendation, setAiRecommendation] = useState<string>(
-    "【Python Spatial AI】多次元幾何解析・階数ペナルティ計算完了。Dr.相山が最速で現場到着予定です。"
-  );
-  const wsRef = useRef<WebSocket | null>(null);
 
   // Load AED data once
   useEffect(() => {
@@ -97,103 +51,6 @@ export default function DailyPage() {
     );
   }, [aeds, recalculate]);
 
-  // Connect to Python FastAPI Optimization API & WebSocket
-  const startPythonAiDispatch = async () => {
-    try {
-      // 1. Call FastAPI Optimization Endpoint
-      const res = await fetch("http://localhost:8000/api/v1/dispatch/optimize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_lat: userPos.lat,
-          user_lng: userPos.lng,
-          incident_type: "cardiac_arrest",
-          emergency_level: 1,
-        }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setAiRecommendation(data.ai_recommendation);
-        if (data.responders && data.responders.length > 0) {
-          setResponders(
-            data.responders.map((r: {
-              id: string;
-              name: string;
-              role: string;
-              badge: string;
-              lat: number;
-              lng: number;
-              status: string;
-              assigned_task: string;
-            }) => ({
-              id: r.id,
-              name: r.name,
-              role: r.role === "doctor" ? "doctor" : r.role === "nurse" ? "nurse" : "responder",
-              badge: r.badge,
-              lat: r.lat,
-              lng: r.lng,
-              status: r.status,
-              task: r.assigned_task,
-            }))
-          );
-        }
-      }
-    } catch {
-      // Fallback if backend API is connecting
-    }
-
-    // 2. Connect to Python WebSocket for Real-time trajectory streaming
-    try {
-      const ws = new WebSocket("ws://localhost:8000/ws/emergency/incident-1001");
-      wsRef.current = ws;
-
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.responders) {
-          setResponders(
-            data.responders.map((r: {
-              id: string;
-              name: string;
-              role: string;
-              badge: string;
-              lat: number;
-              lng: number;
-              status: string;
-              task: string;
-            }) => ({
-              id: r.id,
-              name: r.name,
-              role: r.role === "doctor" ? "doctor" : r.role === "nurse" ? "nurse" : "responder",
-              badge: r.badge,
-              lat: r.lat,
-              lng: r.lng,
-              status: r.status,
-              task: r.task,
-            }))
-          );
-        }
-      };
-    } catch {
-      // Fallback simulation
-    }
-  };
-
-  const toggleDemo = () => {
-    const nextState = !demoActive;
-    setDemoActive(nextState);
-    if (nextState) {
-      setDispatchToast(true);
-      setTimeout(() => setDispatchToast(false), 5000);
-      startPythonAiDispatch();
-    } else {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-    }
-  };
-
   const nearest = topAEDs[0];
 
   return (
@@ -202,89 +59,13 @@ export default function DailyPage() {
       <header className="bg-white border-b border-gray-100 px-4 py-3 flex items-center justify-between shadow-xs sticky top-0 z-50">
         <div>
           <p className="text-[10px] text-gray-400 tracking-widest uppercase font-semibold">AED Navigator</p>
-          <h1 className="text-base font-bold text-gray-800 flex items-center gap-1.5">
-            中央区 AEDマップ
-            {demoActive && (
-              <span className="text-[10px] bg-purple-600 text-white font-black px-2 py-0.5 rounded-full animate-pulse">
-                🐍 Python AI連動中
-              </span>
-            )}
-          </h1>
+          <h1 className="text-base font-bold text-gray-800">中央区 AEDマップ</h1>
         </div>
-
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setShowAuthModal(true)}
-            className="text-xs bg-purple-50 border border-purple-200 text-purple-700 font-semibold px-2.5 py-1.5 rounded-xl hover:bg-purple-100 transition-colors flex items-center gap-1"
-          >
-            <span>👨‍⚕️</span> 資格照会
-          </button>
-
-          <button
-            onClick={toggleDemo}
-            className={`text-xs font-bold px-3 py-1.5 rounded-xl transition-all shadow-xs flex items-center gap-1 ${
-              demoActive
-                ? "bg-purple-600 text-white animate-pulse"
-                : "bg-gradient-to-r from-blue-600 to-indigo-600 text-white"
-            }`}
-          >
-            <span>⚡</span>
-            {demoActive ? "AI出動解除" : "Python AI起動"}
-          </button>
-        </div>
+        <span className="text-xs bg-blue-100 text-blue-600 font-semibold px-2 py-1 rounded-full">平時モード</span>
       </header>
 
-      {/* Demo Toast Notification */}
-      {dispatchToast && (
-        <div className="mx-4 mt-3 p-3 bg-purple-900 text-white rounded-2xl shadow-lg border border-purple-700 animate-bounce flex items-center justify-between text-xs font-semibold">
-          <div className="flex items-center gap-2">
-            <span className="text-xl">🐍</span>
-            <div>
-              <p className="font-bold">【Python Spatial AI 出動計算完了】</p>
-              <p className="text-purple-200 text-[11px]">幾何計算＆WebSocketストリーミングで近隣医療者へ自動タスクアサイン</p>
-            </div>
-          </div>
-          <button onClick={() => setDispatchToast(false)} className="text-white/80 font-bold text-base px-2">✕</button>
-        </div>
-      )}
-
-      {/* Active Demo Responder Dispatch Status Drawer */}
-      {demoActive && (
-        <div className="mx-4 mt-3 bg-purple-950 text-white rounded-2xl p-4 shadow-md border border-purple-800">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-xs font-bold text-purple-300 flex items-center gap-1">
-              <span className="animate-ping text-purple-400">📡</span> Python FastAPI WebSocket ストリーミング
-            </p>
-            <span className="text-[10px] bg-purple-800 text-purple-200 px-2 py-0.5 rounded-full font-bold">
-              最適アサイン完了
-            </span>
-          </div>
-
-          <p className="text-xs text-purple-200 bg-purple-900/80 p-2.5 rounded-xl border border-purple-700/60 mb-3 leading-relaxed">
-            {aiRecommendation}
-          </p>
-
-          <div className="space-y-2 text-xs">
-            {responders.map((r) => (
-              <div key={r.id} className="bg-purple-900/60 rounded-xl p-2.5 border border-purple-700/50 flex items-center justify-between">
-                <div>
-                  <p className="font-bold text-white flex items-center gap-1">
-                    <span>{r.badge}</span>
-                    <span>{r.name}</span>
-                  </p>
-                  <p className="text-[11px] text-purple-300 mt-0.5">タスク: {r.task}</p>
-                </div>
-                <span className="text-[11px] text-green-400 font-bold bg-green-950/60 px-2 py-1 rounded-lg border border-green-800/40">
-                  {r.status}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Map — large */}
-      <div className="mx-4 mt-3 rounded-2xl overflow-hidden shadow-sm border border-gray-100 relative" style={{ height: 340 }}>
+      <div className="mx-4 mt-4 rounded-2xl overflow-hidden shadow-sm border border-gray-100 relative" style={{ height: 340 }}>
         {loading ? (
           <div className="w-full h-full bg-gray-100 flex items-center justify-center">
             <div className="w-8 h-8 border-3 border-blue-400 border-t-transparent rounded-full animate-spin" />
@@ -296,7 +77,6 @@ export default function DailyPage() {
               userLat={userPos.lat}
               userLng={userPos.lng}
               topAEDs={topAEDs}
-              responders={demoActive ? responders : []}
             />
             {/* GPS button — floating on map */}
             <button
@@ -313,21 +93,6 @@ export default function DailyPage() {
             </button>
           </>
         )}
-      </div>
-
-      {/* Quick Action: Request AED Transport Dispatch */}
-      <div className="mx-4 mt-3">
-        <button
-          onClick={toggleDemo}
-          className={`w-full py-3.5 rounded-2xl font-bold text-sm shadow-md flex items-center justify-center gap-2 transition-all ${
-            demoActive
-              ? "bg-purple-700 text-white hover:bg-purple-800"
-              : "bg-gradient-to-r from-purple-600 to-indigo-600 text-white hover:opacity-95"
-          }`}
-        >
-          <span className="text-xl">🐍</span>
-          <span>{demoActive ? "Python AI出動計算中 (ストリーミング動作中)" : "Python AI出動最適化・医療者呼び出し (デモ)"}</span>
-        </button>
       </div>
 
       {/* Stats */}
@@ -428,9 +193,6 @@ export default function DailyPage() {
           </div>
         </button>
       </div>
-
-      {/* Doctor Authentication Modal */}
-      <DoctorAuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} />
     </div>
   );
 }
