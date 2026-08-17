@@ -4,11 +4,23 @@ import { useEffect, useRef } from "react";
 import type { AEDLocation } from "@/app/api/aed/route";
 import type { RankedAED } from "@/lib/distance";
 
+export interface ResponderMarker {
+  id: string;
+  name: string;
+  role: "doctor" | "nurse" | "responder";
+  badge: string;
+  lat: number;
+  lng: number;
+  status: string;
+  task: string;
+}
+
 interface Props {
   aeds: AEDLocation[];
   userLat: number | null;
   userLng: number | null;
   topAEDs?: RankedAED[];
+  responders?: ResponderMarker[];
 }
 
 const RANK_COLORS = ["#ef4444", "#f97316", "#3b82f6"];
@@ -53,32 +65,47 @@ function aedPopupHtml(aed: AEDLocation, rankLabel?: string, rankColor?: string):
   `;
 }
 
-export default function AEDMap({ aeds, userLat, userLng, topAEDs = [] }: Props) {
+export default function AEDMap({ aeds, userLat, userLng, topAEDs = [], responders = [] }: Props) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<import("leaflet").Map | null>(null);
 
   useEffect(() => {
-    if (!mapRef.current || mapInstanceRef.current) return;
+    if (!mapRef.current) return;
+    let isCancelled = false;
 
     const initMap = async () => {
       const L = (await import("leaflet")).default;
       await import("leaflet/dist/leaflet.css");
+      if (isCancelled || !mapRef.current) return;
 
-      const centerLat = userLat ?? 35.670;
-      const centerLng = userLng ?? 139.772;
+      // Re-use map instance if existing, otherwise create
+      let map = mapInstanceRef.current;
+      if (!map) {
+        if ((mapRef.current as unknown as { _leaflet_id?: number | null })._leaflet_id) {
+          (mapRef.current as unknown as { _leaflet_id?: number | null })._leaflet_id = null;
+        }
+        const centerLat = userLat ?? 35.670599;
+        const centerLng = userLng ?? 139.77201;
+        map = L.map(mapRef.current!, { zoomControl: false }).setView([centerLat, centerLng], 16);
+        mapInstanceRef.current = map;
 
-      const map = L.map(mapRef.current!, { zoomControl: false }).setView([centerLat, centerLng], 15);
-      mapInstanceRef.current = map;
-
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "© OpenStreetMap",
-      }).addTo(map);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution: "© OpenStreetMap",
+        }).addTo(map);
+      } else {
+        // Clear non-tile layers on map update
+        map.eachLayer((layer) => {
+          if (!(layer instanceof L.TileLayer)) {
+            map?.removeLayer(layer);
+          }
+        });
+      }
 
       // User marker
       if (userLat && userLng) {
         L.circleMarker([userLat, userLng], {
-          radius: 10, fillColor: "#3b82f6", color: "#fff", weight: 3, fillOpacity: 1,
-        }).addTo(map).bindPopup("📍 現在地");
+          radius: 11, fillColor: "#2563eb", color: "#ffffff", weight: 3, fillOpacity: 1,
+        }).addTo(map).bindPopup("<div style='font-weight:bold;font-size:13px'>📍 救助要請地点（現在地）</div>");
       }
 
       const topIdSet = new Set(topAEDs.map((a) => a.id));
@@ -86,11 +113,9 @@ export default function AEDMap({ aeds, userLat, userLng, topAEDs = [] }: Props) 
 
       // Group all AEDs by location for offset calculation
       const coordGroups = groupByCoord(aeds);
-
-      // Track per-coord index for offset
       const coordIndex = new Map<string, number>();
 
-      // --- Background AEDs (not top3) ---
+      // --- Background AEDs ---
       aeds.forEach((aed) => {
         if (topIdSet.has(aed.id)) return;
 
@@ -121,11 +146,11 @@ export default function AEDMap({ aeds, userLat, userLng, topAEDs = [] }: Props) 
         });
 
         L.marker([lat, lng], { icon })
-          .addTo(map)
+          .addTo(map!)
           .bindPopup(aedPopupHtml(aed));
       });
 
-      // --- Top 3 AEDs — prominent numbered markers ---
+      // --- Top 3 AEDs ---
       topAEDs.forEach((aed) => {
         const key = `${aed.lat.toFixed(4)},${aed.lng.toFixed(4)}`;
         const group = coordGroups.get(key) ?? [aed];
@@ -158,23 +183,74 @@ export default function AEDMap({ aeds, userLat, userLng, topAEDs = [] }: Props) 
         const rankLabel = `第${aed.rank}位 · ${ranked.distanceM}m`;
 
         L.marker([lat, lng], { icon })
-          .addTo(map)
+          .addTo(map!)
           .bindPopup(aedPopupHtml(aed, rankLabel, color), { maxWidth: 260 });
 
-        // Route line from user to top3
         if (userLat && userLng) {
           L.polyline([[userLat, userLng], [lat, lng]], {
             color,
             weight: aed.rank === 1 ? 3 : 1.5,
             opacity: aed.rank === 1 ? 0.85 : 0.45,
             dashArray: aed.rank === 1 ? undefined : "6,5",
-          }).addTo(map);
+          }).addTo(map!);
+        }
+      });
+
+      // --- Responders (Doctors / Nurses / Volunteers on Demo Dispatch) ---
+      responders.forEach((resp) => {
+        const bg = resp.role === "doctor" ? "#8b5cf6" : resp.role === "nurse" ? "#ec4899" : "#059669";
+        const iconHtml = `
+          <div style="
+            background:${bg};
+            padding:5px 10px;
+            border-radius:20px;
+            border:2px solid white;
+            box-shadow:0 4px 12px rgba(0,0,0,0.4);
+            color:white;
+            font-size:11px;
+            font-weight:700;
+            white-space:nowrap;
+            display:inline-flex;
+            align-items:center;
+            gap:4px;
+            font-family:system-ui,-apple-system,sans-serif;
+            transform:translate(-50%, -50%);
+          ">
+            <span>${resp.badge}</span>
+            <span>${resp.name}</span>
+          </div>
+        `;
+        const icon = L.divIcon({
+          html: iconHtml,
+          iconSize: [0, 0],
+          iconAnchor: [0, 0],
+          className: "",
+        });
+
+        L.marker([resp.lat, resp.lng], { icon })
+          .addTo(map!)
+          .bindPopup(`
+            <div style="font-family:system-ui;max-width:240px;line-height:1.4">
+              <div style="font-weight:bold;font-size:13px;color:${bg}">${resp.badge} ${resp.name}</div>
+              <div style="font-size:11px;color:#4b5563;margin-top:2px;word-break:break-all">タスク: ${resp.task}</div>
+              <div style="font-size:11px;font-weight:bold;color:#16a34a;margin-top:4px">ステータス: ${resp.status}</div>
+            </div>
+          `, { maxWidth: 260 });
+
+        if (userLat && userLng) {
+          L.polyline([[resp.lat, resp.lng], [userLat, userLng]], {
+            color: bg,
+            weight: 2,
+            dashArray: "4,4",
+            opacity: 0.7,
+          }).addTo(map!);
         }
       });
     };
 
     initMap();
-  }, [aeds, userLat, userLng, topAEDs]);
+  }, [aeds, userLat, userLng, topAEDs, responders]);
 
   return <div ref={mapRef} className="w-full h-full" />;
 }
+

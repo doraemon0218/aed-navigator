@@ -20,7 +20,7 @@ export default function DailyPage() {
   const [gpsLoading, setGpsLoading] = useState(false);
   const [selected, setSelected] = useState<RankedAED | null>(null);
 
-  // Load AED data once, compute top3 from current pos
+  // Load AED data once
   useEffect(() => {
     fetch("/api/aed")
       .then((r) => r.json())
@@ -56,9 +56,9 @@ export default function DailyPage() {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       {/* Header */}
-      <header className="bg-white border-b border-gray-100 px-4 py-3 flex items-center justify-between">
+      <header className="bg-white border-b border-gray-100 px-4 py-3 flex items-center justify-between shadow-xs sticky top-0 z-50">
         <div>
-          <p className="text-xs text-gray-400 tracking-widest uppercase font-semibold">AED Navigator</p>
+          <p className="text-[10px] text-gray-400 tracking-widest uppercase font-semibold">AED Navigator</p>
           <h1 className="text-base font-bold text-gray-800">中央区 AEDマップ</h1>
         </div>
         <span className="text-xs bg-blue-100 text-blue-600 font-semibold px-2 py-1 rounded-full">平時モード</span>
@@ -181,7 +181,7 @@ export default function DailyPage() {
       <div className="h-28" />
 
       {/* Emergency button — sticky */}
-      <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-gray-50 via-gray-50/90 to-transparent pt-6 pb-6 px-4">
+      <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-gray-50 via-gray-50/90 to-transparent pt-6 pb-6 px-4 z-40">
         <button
           onClick={() => router.push("/emergency")}
           className="w-full py-5 rounded-2xl bg-red-600 shadow-[0_4px_20px_rgba(239,68,68,0.45)] flex items-center justify-center gap-3 active:scale-98 transition-transform"
@@ -189,7 +189,7 @@ export default function DailyPage() {
           <span className="text-3xl">🚨</span>
           <div className="text-left">
             <p className="font-bold text-white text-lg leading-tight">緊急モード起動</p>
-            <p className="text-red-200 text-xs">最寄りAED TOP3を即座に表示</p>
+            <p className="text-red-200 text-xs">最寄りAED TOP3特定 & 救助指示を発動</p>
           </div>
         </button>
       </div>
