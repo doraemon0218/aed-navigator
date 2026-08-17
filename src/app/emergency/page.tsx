@@ -5,12 +5,46 @@ import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import type { AEDLocation } from "@/app/api/aed/route";
 import { findTopAEDs, type RankedAED } from "@/lib/distance";
+import type { ResponderMarker } from "@/components/AEDMap";
 
 const AEDMap = dynamic(() => import("@/components/AEDMap"), { ssr: false });
 
 // Demo default: 中央区庁舎
 const DEFAULT_POS = { lat: 35.670599, lng: 139.77201 };
 const RANK_COLORS = ["#ef4444", "#f97316", "#3b82f6"];
+
+const EMERGENCY_RESPONDERS: ResponderMarker[] = [
+  {
+    id: "dr-1",
+    name: "Dr.相山 (救急科)",
+    role: "doctor",
+    badge: "👨‍⚕️ 医師認証済",
+    lat: 35.6712,
+    lng: 139.7711,
+    status: "現場直行中 (約40m)",
+    task: "胸骨圧迫・現場救命指揮",
+  },
+  {
+    id: "nurse-1",
+    name: "ナース鈴木",
+    role: "nurse",
+    badge: "👩‍⚕️ 看護師認証済",
+    lat: 35.6698,
+    lng: 139.7729,
+    status: "第1位AEDへ急行中",
+    task: "最寄りAED確保・現場搬送",
+  },
+  {
+    id: "paramedic-1",
+    name: "消防指令・救急隊",
+    role: "responder",
+    badge: "🚑 指令中枢連動",
+    lat: 35.6725,
+    lng: 139.7738,
+    status: "119自動連携・出動完了",
+    task: "通報・誘導支援",
+  },
+];
 
 export default function EmergencyPage() {
   const router = useRouter();
@@ -22,6 +56,7 @@ export default function EmergencyPage() {
   const [called119, setCalled119] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [gpsLoading, setGpsLoading] = useState(false);
+  const [demoActive, setDemoActive] = useState(true);
   const startTime = useRef(Date.now());
 
   useEffect(() => {
@@ -63,7 +98,7 @@ export default function EmergencyPage() {
   }, []);
 
   const target = topAEDs.find((a) => a.rank === activeRank) ?? topAEDs[0];
-  const fmt = (s: number) => s < 60 ? `${s}秒` : `${Math.floor(s / 60)}分${s % 60}秒`;
+  const fmt = (s: number) => (s < 60 ? `${s}秒` : `${Math.floor(s / 60)}分${s % 60}秒`);
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex flex-col">
@@ -72,17 +107,41 @@ export default function EmergencyPage() {
         <div className="flex items-center gap-2">
           <span className="text-xl animate-pulse">🚨</span>
           <div>
-            <p className="font-bold text-base leading-tight">緊急モード</p>
-            <p className="text-red-200 text-xs">
-              {phase === "locating" ? "AEDデータを取得中…" : "中央区 · AED TOP3特定済み"}
+            <p className="font-bold text-base leading-tight">緊急モード起動中</p>
+            <p className="text-red-100 text-xs">
+              {phase === "locating" ? "AEDデータを取得中…" : "中央区 · 近隣医療従事者へ同時タスク要請済"}
             </p>
           </div>
         </div>
-        <div className="text-right">
-          <p className="text-red-200 text-xs">経過時間</p>
-          <p className="font-bold text-xl tabular-nums">{fmt(elapsed)}</p>
+        <div className="text-right flex items-center gap-2">
+          <button
+            onClick={() => setDemoActive(!demoActive)}
+            className="text-[11px] bg-red-800 border border-red-400/40 text-white px-2 py-1 rounded-lg font-bold"
+          >
+            {demoActive ? "デモ表示中" : "デモON"}
+          </button>
+          <div>
+            <p className="text-red-200 text-[10px]">経過時間</p>
+            <p className="font-bold text-lg tabular-nums leading-none">{fmt(elapsed)}</p>
+          </div>
         </div>
       </div>
+
+      {/* Backend Emergency Dispatch Banner */}
+      {demoActive && (
+        <div className="bg-purple-950 border-b border-purple-800 px-4 py-2.5 flex items-center justify-between text-xs">
+          <div className="flex items-center gap-2">
+            <span className="animate-ping text-purple-400 text-sm">📡</span>
+            <div>
+              <p className="font-bold text-purple-200">【バックエンド自動出動指示連動】</p>
+              <p className="text-[11px] text-purple-300">近隣登録医師・看護師 3名へ自動通知&タスク配分中</p>
+            </div>
+          </div>
+          <span className="text-[10px] bg-purple-800 text-purple-200 px-2 py-0.5 rounded-full font-bold">
+            自動割り当て中
+          </span>
+        </div>
+      )}
 
       {/* Map — large */}
       <div className="relative flex-shrink-0" style={{ height: 320 }}>
@@ -100,6 +159,7 @@ export default function EmergencyPage() {
               userLat={userPos.lat}
               userLng={userPos.lng}
               topAEDs={topAEDs}
+              responders={demoActive ? EMERGENCY_RESPONDERS : []}
             />
             {/* GPS button — floating on map */}
             <button
@@ -126,9 +186,10 @@ export default function EmergencyPage() {
               key={aed.id}
               onClick={() => setActiveRank(aed.rank)}
               className="flex-1 py-2 rounded-xl text-xs font-bold border transition-all"
-              style={activeRank === aed.rank
-                ? { background: RANK_COLORS[aed.rank - 1], borderColor: "transparent", color: "white" }
-                : { background: "#1f2937", borderColor: "#374151", color: "#9ca3af" }
+              style={
+                activeRank === aed.rank
+                  ? { background: RANK_COLORS[aed.rank - 1], borderColor: "transparent", color: "white" }
+                  : { background: "#1f2937", borderColor: "#374151", color: "#9ca3af" }
               }
             >
               {aed.rank}位 · {aed.distanceM}m
@@ -140,9 +201,11 @@ export default function EmergencyPage() {
       {/* Selected AED detail */}
       <div className="px-4 pt-2 flex-shrink-0">
         {target ? (
-          <div className={`rounded-xl p-4 border ${
-            target.accessible ? "border-green-500/30 bg-green-900/20" : "border-red-500/30 bg-red-900/20"
-          }`}>
+          <div
+            className={`rounded-xl p-4 border ${
+              target.accessible ? "border-green-500/30 bg-green-900/20" : "border-red-500/30 bg-red-900/20"
+            }`}
+          >
             <div className="flex items-start gap-3">
               <div
                 className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-base flex-shrink-0"
@@ -153,9 +216,11 @@ export default function EmergencyPage() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <p className="font-bold text-sm">{target.name}</p>
-                  <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0 ${
-                    target.accessible ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
-                  }`}>
+                  <span
+                    className={`text-xs font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                      target.accessible ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+                    }`}
+                  >
                     {target.accessible ? "✅ 使用可" : "🔒 施錠中"}
                   </span>
                 </div>
@@ -180,7 +245,7 @@ export default function EmergencyPage() {
             className="py-4 rounded-xl font-bold text-xs bg-orange-600 active:bg-orange-700 flex flex-col items-center gap-1"
           >
             <span className="text-2xl">🤲</span>
-            救助する
+            救助する (CPR)
           </button>
           <button
             onClick={handle119}
@@ -192,9 +257,11 @@ export default function EmergencyPage() {
             {called119 ? "通報済み" : "119通報"}
           </button>
           <a
-            href={target
-              ? `https://www.google.com/maps/dir/?api=1&destination=${target.lat},${target.lng}&travelmode=walking`
-              : "#"}
+            href={
+              target
+                ? `https://www.google.com/maps/dir/?api=1&destination=${target.lat},${target.lng}&travelmode=walking`
+                : "#"
+            }
             target="_blank"
             rel="noopener noreferrer"
             className="py-4 rounded-xl font-bold text-xs bg-blue-600 flex flex-col items-center gap-1 text-center"
@@ -203,7 +270,7 @@ export default function EmergencyPage() {
             経路案内
           </a>
         </div>
-        <button onClick={() => router.push("/")} className="w-full py-2 text-gray-600 text-xs">
+        <button onClick={() => router.push("/")} className="w-full py-2 text-gray-400 text-xs hover:text-white">
           平時モードに戻る
         </button>
       </div>
