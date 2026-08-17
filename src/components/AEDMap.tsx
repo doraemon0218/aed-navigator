@@ -202,18 +202,19 @@ export default function AEDMap({ aeds, userLat, userLng, topAEDs = [], responder
         const iconHtml = `
           <div style="
             background:${bg};
-            padding:4px 8px;
-            border-radius:16px;
+            padding:5px 10px;
+            border-radius:20px;
             border:2px solid white;
             box-shadow:0 4px 12px rgba(0,0,0,0.4);
             color:white;
             font-size:11px;
             font-weight:700;
             white-space:nowrap;
-            display:flex;
+            display:inline-flex;
             align-items:center;
             gap:4px;
-            font-family:system-ui;
+            font-family:system-ui,-apple-system,sans-serif;
+            transform:translate(-50%, -50%);
           ">
             <span>${resp.badge}</span>
             <span>${resp.name}</span>
@@ -221,20 +222,20 @@ export default function AEDMap({ aeds, userLat, userLng, topAEDs = [], responder
         `;
         const icon = L.divIcon({
           html: iconHtml,
-          iconSize: [100, 28],
-          iconAnchor: [50, 14],
+          iconSize: [0, 0],
+          iconAnchor: [0, 0],
           className: "",
         });
 
         L.marker([resp.lat, resp.lng], { icon })
           .addTo(map!)
           .bindPopup(`
-            <div style="font-family:system-ui;min-width:180px">
+            <div style="font-family:system-ui;max-width:240px;line-height:1.4">
               <div style="font-weight:bold;font-size:13px;color:${bg}">${resp.badge} ${resp.name}</div>
-              <div style="font-size:11px;color:#4b5563;margin-top:2px">タスク: ${resp.task}</div>
+              <div style="font-size:11px;color:#4b5563;margin-top:2px;word-break:break-all">タスク: ${resp.task}</div>
               <div style="font-size:11px;font-weight:bold;color:#16a34a;margin-top:4px">ステータス: ${resp.status}</div>
             </div>
-          `);
+          `, { maxWidth: 260 });
 
         if (userLat && userLng) {
           L.polyline([[resp.lat, resp.lng], [userLat, userLng]], {

@@ -132,15 +132,15 @@ export default function EmergencyPage() {
       </div>
 
       {/* Real-time Automated Dispatch Status Banner */}
-      <div className="bg-purple-950 border-b border-purple-800 px-4 py-2 flex items-center justify-between text-xs">
-        <div className="flex items-center gap-2">
-          <span className="animate-ping text-purple-400 text-sm">📡</span>
-          <div>
-            <p className="font-bold text-purple-200">【自動ディスパッチ連動中】</p>
-            <p className="text-[11px] text-purple-300">{dispatchStatus}</p>
+      <div className="bg-purple-950 border-b border-purple-800 px-4 py-2 flex items-center justify-between text-xs overflow-hidden">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className="animate-ping text-purple-400 text-sm flex-shrink-0">📡</span>
+          <div className="min-w-0 flex-1">
+            <p className="font-bold text-purple-200 truncate">【自動ディスパッチ連動中】</p>
+            <p className="text-[11px] text-purple-300 leading-tight truncate">{dispatchStatus}</p>
           </div>
         </div>
-        <span className="text-[10px] bg-purple-800 text-purple-200 px-2 py-0.5 rounded-full font-bold">
+        <span className="text-[10px] bg-purple-800 text-purple-200 px-2 py-0.5 rounded-full font-bold flex-shrink-0 ml-2">
           自動出動中
         </span>
       </div>
