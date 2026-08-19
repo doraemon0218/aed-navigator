@@ -10,6 +10,7 @@ import { getVerifiedAEDs } from "@/lib/offlineAEDs";
 import { getTipsForAED } from "@/lib/tips";
 import { getTipSummary } from "@/lib/tipSummary";
 import { getAEDAccess } from "@/lib/aedAccess";
+import type { ResponderMarker } from "@/components/AEDMap";
 
 const AEDMap = dynamic(() => import("@/components/AEDMap"), { ssr: false });
 
@@ -20,7 +21,6 @@ function isInChuo(lat: number, lng: number) {
   return lat >= 35.64 && lat <= 35.71 && lng >= 139.74 && lng <= 139.81;
 }
 
-// Patient is placed ~100m from rescuer (demo: realistic scenario)
 function randomNearby(base: { lat: number; lng: number }): { lat: number; lng: number } {
   const angle = Math.random() * 2 * Math.PI;
   const radius = 80 + Math.random() * 40;
@@ -43,6 +43,8 @@ export default function EmergencyPage() {
   const [notified, setNotified] = useState(false);
   const [doctorsNotified, setDoctorsNotified] = useState<number | null>(null);
   const [notifying, setNotifying] = useState(false);
+  const [responders, setResponders] = useState<ResponderMarker[]>([]);
+  const [dispatchStatus, setDispatchStatus] = useState("医療従事者自動アサイン中…");
   const startTime = useRef(Date.now());
   const notifiedRef = useRef(false);
   const gpsPosRef = useRef(DEFAULT_POS);
@@ -52,12 +54,11 @@ export default function EmergencyPage() {
     return () => clearInterval(id);
   }, []);
 
-  // Register service worker and subscribe to push (demo: notify requester's own device)
+  // Register service worker and subscribe to push
   useEffect(() => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
     const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
     if (!vapidKey) return;
-
     navigator.serviceWorker.register("/sw.js").then(async (reg) => {
       await navigator.serviceWorker.ready;
       let sub = await reg.pushManager.getSubscription();
@@ -71,6 +72,28 @@ export default function EmergencyPage() {
         body: JSON.stringify(sub),
       });
     }).catch(() => {});
+  }, []);
+
+  const triggerBackendDispatch = useCallback(async (lat: number, lng: number) => {
+    try {
+      const res = await fetch("/api/emergency/dispatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userLat: lat, userLng: lng }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.responders) {
+          setResponders(data.responders.map((r: {
+            id: string; name: string; role: "doctor" | "nurse" | "responder";
+            badge: string; lat: number; lng: number; status: string; task: string;
+          }) => ({ id: r.id, name: r.name, role: r.role, badge: r.badge, lat: r.lat, lng: r.lng, status: r.status, task: r.task })));
+          setDispatchStatus("近隣の登録医療従事者3名に自動出動通知＆タスク配信完了");
+        }
+      }
+    } catch {
+      // Graceful fallback
+    }
   }, []);
 
   useEffect(() => {
@@ -89,14 +112,16 @@ export default function EmergencyPage() {
           if (offline.length > 0) setFetchError(true);
         }
         setPhase("ready");
+        triggerBackendDispatch(DEFAULT_POS.lat, DEFAULT_POS.lng);
       })
       .catch(() => {
         const offline = getVerifiedAEDs();
         setAeds(offline);
         setFetchError(true);
         setPhase("ready");
+        triggerBackendDispatch(DEFAULT_POS.lat, DEFAULT_POS.lng);
       });
-  }, []);
+  }, [triggerBackendDispatch]);
 
   useEffect(() => {
     if (aeds.length === 0) return;
@@ -105,17 +130,11 @@ export default function EmergencyPage() {
     aeds.forEach((aed) => {
       const a = getAEDAccess(aed.id);
       if (a) accessMap.set(aed.id, a.level);
-      // Security = manually tagged locked OR CSV says currently inaccessible
-      if (a?.level === "locked" || (!a && !aed.accessible)) {
-        securityIds.add(aed.id);
-      }
+      if (a?.level === "locked" || (!a && !aed.accessible)) securityIds.add(aed.id);
     });
-    const top3 = findTopAEDsWithSecurityConstraint(
-      userPos.lat, userPos.lng, aeds, accessMap, securityIds
-    );
+    const top3 = findTopAEDsWithSecurityConstraint(userPos.lat, userPos.lng, aeds, accessMap, securityIds);
     setTopAEDs(top3);
     try { localStorage.setItem("emergency_top3", JSON.stringify(top3)); } catch {}
-    // Register emergency location for polling — no doctor notification yet
     if (!notifiedRef.current) {
       notifiedRef.current = true;
       fetch("/api/emergency", {
@@ -161,11 +180,12 @@ export default function EmergencyPage() {
           setPosMode("real");
         } else setPosMode("demo");
         setGpsLoading(false);
+        triggerBackendDispatch(pos.lat, pos.lng);
       },
       () => setGpsLoading(false),
       { timeout: 8000, enableHighAccuracy: true }
     );
-  }, []);
+  }, [triggerBackendDispatch]);
 
   const fmt = (s: number) => s < 60 ? `${s}秒` : `${Math.floor(s / 60)}分${s % 60}秒`;
 
@@ -221,6 +241,20 @@ export default function EmergencyPage() {
         </div>
       </div>
 
+      {/* Auto dispatch status banner */}
+      <div className="bg-purple-950 border-b border-purple-800 px-4 py-2 flex items-center justify-between text-xs overflow-hidden flex-shrink-0">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className="animate-ping text-purple-400 text-sm flex-shrink-0">📡</span>
+          <div className="min-w-0 flex-1">
+            <p className="font-bold text-purple-200 truncate">【自動ディスパッチ連動中】</p>
+            <p className="text-[11px] text-purple-300 leading-tight truncate">{dispatchStatus}</p>
+          </div>
+        </div>
+        <span className="text-[10px] bg-purple-800 text-purple-200 px-2 py-0.5 rounded-full font-bold flex-shrink-0 ml-2">
+          自動出動中
+        </span>
+      </div>
+
       {fetchError && (
         <div className="bg-amber-600 px-4 py-2 flex items-center gap-2 flex-shrink-0">
           <p className="text-xs font-semibold text-amber-100">
@@ -240,7 +274,13 @@ export default function EmergencyPage() {
           </div>
         ) : aeds.length > 0 ? (
           <>
-            <AEDMap aeds={aeds} userLat={userPos.lat} userLng={userPos.lng} topAEDs={topAEDs} />
+            <AEDMap
+              aeds={aeds}
+              userLat={userPos.lat}
+              userLng={userPos.lng}
+              topAEDs={topAEDs}
+              responders={responders}
+            />
             <button
               onClick={getGPS}
               disabled={gpsLoading}
@@ -259,12 +299,11 @@ export default function EmergencyPage() {
         )}
       </div>
 
-      {/* Primary action — full width */}
+      {/* Primary action */}
       <div className="px-4 pt-4 pb-2 flex-shrink-0 space-y-2">
         <button
           onClick={async () => {
             try { localStorage.setItem("emergency_patient_pos", JSON.stringify(userPos)); } catch {}
-            // Notify nearby doctors on button press
             setNotifying(true);
             try {
               const res = await fetch("/api/emergency", {
@@ -323,7 +362,7 @@ export default function EmergencyPage() {
         )}
       </div>
 
-      {/* Share sheet — show QR for /respond URL */}
+      {/* Share sheet — QR for /respond URL */}
       {showShare && (
         <div
           className="fixed inset-0 bg-black/70 z-50 flex items-end"
@@ -374,12 +413,8 @@ export default function EmergencyPage() {
                     const summary = getTipSummary(aed.id);
                     const access = getAEDAccess(aed.id);
                     const landmark = summary ?? tips[0]?.text ?? null;
-
-                    // Security check: locked tag OR CSV says inaccessible
                     const isSecurity = access?.level === "locked" || (!access && !aed.accessible);
-                    // Selectable if not security, or if security but within business hours
                     const canSelect = !isSecurity || isBusinessHours;
-
                     const accessLabel = access?.level === "easy"
                       ? { icon: "✅", text: "屋外・24h", cls: "text-green-400" }
                       : access?.level === "caution"
@@ -387,13 +422,11 @@ export default function EmergencyPage() {
                       : isSecurity
                       ? { icon: "🔒", text: isBusinessHours ? "施設内（開館時間内）" : "施設内（現在施錠中）", cls: isBusinessHours ? "text-amber-300" : "text-red-400" }
                       : { icon: "✅", text: "使用可", cls: "text-green-400" };
-
                     const rowBg = isSecurity && !canSelect
                       ? "rgba(100,100,100,0.15)"
                       : access?.level === "caution"
                       ? "rgba(245,158,11,0.10)"
                       : color + "18";
-
                     const rankColor = isSecurity && !canSelect ? "#6b7280" : color;
 
                     return (
@@ -402,15 +435,12 @@ export default function EmergencyPage() {
                         className={`flex items-stretch border-b border-white/10 last:border-0 ${isSecurity && !canSelect ? "opacity-60" : ""}`}
                         style={{ background: rowBg }}
                       >
-                        {/* Rank stripe */}
                         <div
                           className="flex-shrink-0 w-10 self-stretch flex items-center justify-center font-black text-2xl text-white"
                           style={{ background: rankColor }}
                         >
                           {isSecurity && !canSelect ? "🔒" : aed.rank}
                         </div>
-
-                        {/* Info */}
                         <div className="flex-1 min-w-0 px-3 py-2.5">
                           <p className="font-black text-xl leading-tight truncate" style={{ color: rankColor }}>
                             {aed.distanceM}m{" "}
@@ -427,7 +457,6 @@ export default function EmergencyPage() {
                           {landmark && (
                             <p className="text-white font-bold text-sm leading-tight truncate">💬 {landmark}</p>
                           )}
-                          {/* Security explanation */}
                           {isSecurity && !canSelect && (
                             <p className="text-red-300 text-xs font-bold mt-1 leading-snug">
                               ⚠️ 現在施錠中の可能性。9:00〜17:00のみ選択可。
@@ -439,8 +468,6 @@ export default function EmergencyPage() {
                             </p>
                           )}
                         </div>
-
-                        {/* Map — disabled if not selectable */}
                         {canSelect
                           ? (
                             <a
