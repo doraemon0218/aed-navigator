@@ -3,42 +3,150 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
+import QRCode from "react-qr-code";
 import type { AEDLocation } from "@/app/api/aed/route";
-import { findTopAEDs, type RankedAED } from "@/lib/distance";
+import { findTopAEDsWithSecurityConstraint, type RankedAED, type AccessLevelMap } from "@/lib/distance";
+import { getVerifiedAEDs } from "@/lib/offlineAEDs";
+import { getTipsForAED } from "@/lib/tips";
+import { getTipSummary } from "@/lib/tipSummary";
+import { getAEDAccess } from "@/lib/aedAccess";
 
 const AEDMap = dynamic(() => import("@/components/AEDMap"), { ssr: false });
 
-// Demo default: 中央区庁舎
 const DEFAULT_POS = { lat: 35.670599, lng: 139.77201 };
-const RANK_COLORS = ["#ef4444", "#f97316", "#3b82f6"];
+const RANK_COLORS = ["#ef4444", "#f97316", "#3b82f6"] as const;
+
+function isInChuo(lat: number, lng: number) {
+  return lat >= 35.64 && lat <= 35.71 && lng >= 139.74 && lng <= 139.81;
+}
+
+// Patient is placed ~100m from rescuer (demo: realistic scenario)
+function randomNearby(base: { lat: number; lng: number }): { lat: number; lng: number } {
+  const angle = Math.random() * 2 * Math.PI;
+  const radius = 80 + Math.random() * 40;
+  const dLat = (radius * Math.cos(angle)) / 111111;
+  const dLng = (radius * Math.sin(angle)) / (111111 * Math.cos(base.lat * Math.PI / 180));
+  return { lat: base.lat + dLat, lng: base.lng + dLng };
+}
 
 export default function EmergencyPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<"locating" | "ready">("locating");
   const [aeds, setAeds] = useState<AEDLocation[]>([]);
-  const [userPos, setUserPos] = useState(DEFAULT_POS);
+  const [userPos, setUserPos] = useState(() => randomNearby(DEFAULT_POS));
   const [topAEDs, setTopAEDs] = useState<RankedAED[]>([]);
-  const [activeRank, setActiveRank] = useState(1);
-  const [called119, setCalled119] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [gpsLoading, setGpsLoading] = useState(false);
+  const [posMode, setPosMode] = useState<"locating" | "real" | "demo">("locating");
+  const [fetchError, setFetchError] = useState(false);
+  const [showShare, setShowShare] = useState(false);
+  const [notified, setNotified] = useState(false);
+  const [doctorsNotified, setDoctorsNotified] = useState<number | null>(null);
+  const [notifying, setNotifying] = useState(false);
   const startTime = useRef(Date.now());
+  const notifiedRef = useRef(false);
+  const gpsPosRef = useRef(DEFAULT_POS);
 
   useEffect(() => {
     const id = setInterval(() => setElapsed(Math.floor((Date.now() - startTime.current) / 1000)), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Load AED data, start with default position
+  // Register service worker and subscribe to push (demo: notify requester's own device)
+  useEffect(() => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+    if (!vapidKey) return;
+
+    navigator.serviceWorker.register("/sw.js").then(async (reg) => {
+      await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        const keyBytes = Uint8Array.from(atob(vapidKey.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+        sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes });
+      }
+      await fetch("/api/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sub),
+      });
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     fetch("/api/aed")
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error("API error");
+        return r.json();
+      })
       .then((data) => {
         const list: AEDLocation[] = data.aeds ?? [];
-        setAeds(list);
-        setTopAEDs(findTopAEDs(DEFAULT_POS.lat, DEFAULT_POS.lng, list, 3));
+        if (list.length > 0) {
+          setAeds(list);
+        } else {
+          const offline = getVerifiedAEDs();
+          setAeds(offline);
+          if (offline.length > 0) setFetchError(true);
+        }
+        setPhase("ready");
+      })
+      .catch(() => {
+        const offline = getVerifiedAEDs();
+        setAeds(offline);
+        setFetchError(true);
         setPhase("ready");
       });
+  }, []);
+
+  useEffect(() => {
+    if (aeds.length === 0) return;
+    const accessMap: AccessLevelMap = new Map();
+    const securityIds = new Set<string>();
+    aeds.forEach((aed) => {
+      const a = getAEDAccess(aed.id);
+      if (a) accessMap.set(aed.id, a.level);
+      // Security = manually tagged locked OR CSV says currently inaccessible
+      if (a?.level === "locked" || (!a && !aed.accessible)) {
+        securityIds.add(aed.id);
+      }
+    });
+    const top3 = findTopAEDsWithSecurityConstraint(
+      userPos.lat, userPos.lng, aeds, accessMap, securityIds
+    );
+    setTopAEDs(top3);
+    try { localStorage.setItem("emergency_top3", JSON.stringify(top3)); } catch {}
+    // Register emergency location for polling — no doctor notification yet
+    if (!notifiedRef.current) {
+      notifiedRef.current = true;
+      fetch("/api/emergency", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lat: userPos.lat, lng: userPos.lng, notifyDoctors: false }),
+      }).then(() => setNotified(true)).catch(() => {});
+    }
+  }, [userPos, aeds]);
+
+  useEffect(() => {
+    if (!navigator.geolocation) { setPosMode("demo"); return; }
+    setGpsLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      (p) => {
+        const pos = { lat: p.coords.latitude, lng: p.coords.longitude };
+        if (isInChuo(pos.lat, pos.lng)) {
+          gpsPosRef.current = pos;
+          setUserPos(randomNearby(pos));
+          setPosMode("real");
+        } else setPosMode("demo");
+        setGpsLoading(false);
+      },
+      () => { setPosMode("demo"); setGpsLoading(false); },
+      { timeout: 8000, enableHighAccuracy: true }
+    );
+  }, []);
+
+  const randomizePatientPos = useCallback(() => {
+    setUserPos(randomNearby(gpsPosRef.current));
+    setPosMode("demo");
   }, []);
 
   const getGPS = useCallback(() => {
@@ -47,166 +155,320 @@ export default function EmergencyPage() {
     navigator.geolocation.getCurrentPosition(
       (p) => {
         const pos = { lat: p.coords.latitude, lng: p.coords.longitude };
-        setUserPos(pos);
-        setTopAEDs(findTopAEDs(pos.lat, pos.lng, aeds, 3));
-        setActiveRank(1);
+        if (isInChuo(pos.lat, pos.lng)) {
+          gpsPosRef.current = pos;
+          setUserPos(randomNearby(pos));
+          setPosMode("real");
+        } else setPosMode("demo");
         setGpsLoading(false);
       },
       () => setGpsLoading(false),
-      { timeout: 8000 }
+      { timeout: 8000, enableHighAccuracy: true }
     );
-  }, [aeds]);
-
-  const handle119 = useCallback(() => {
-    setCalled119(true);
-    window.location.href = "tel:119";
   }, []);
 
-  const target = topAEDs.find((a) => a.rank === activeRank) ?? topAEDs[0];
   const fmt = (s: number) => s < 60 ? `${s}秒` : `${Math.floor(s / 60)}分${s % 60}秒`;
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex flex-col">
       {/* Header */}
-      <div className="bg-red-600 px-4 py-3 flex items-center justify-between flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <span className="text-xl animate-pulse">🚨</span>
-          <div>
-            <p className="font-bold text-base leading-tight">緊急モード</p>
-            <p className="text-red-200 text-xs">
-              {phase === "locating" ? "AEDデータを取得中…" : "中央区 · AED TOP3特定済み"}
-            </p>
+      <div className="bg-red-600 px-4 py-3 flex-shrink-0">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => router.replace("/")}
+              className="text-white/70 text-2xl font-semibold leading-none px-1 active:opacity-60"
+            >
+              ‹
+            </button>
+            <span className="text-xl animate-pulse">🚨</span>
+            <div>
+              <p className="font-bold text-base leading-tight">緊急モード</p>
+              <p className="text-red-200 text-xs">
+                {fetchError
+                  ? `オフラインデータ（${aeds.length}台）`
+                  : phase === "locating" ? "AEDデータを取得中…"
+                  : "最寄りAED TOP3を表示"}
+              </p>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="text-red-200 text-xs">経過時間</p>
+            <p className="font-bold text-xl tabular-nums">{fmt(elapsed)}</p>
           </div>
         </div>
-        <div className="text-right">
-          <p className="text-red-200 text-xs">経過時間</p>
-          <p className="font-bold text-xl tabular-nums">{fmt(elapsed)}</p>
+        <div className="mt-1.5 flex items-center gap-2">
+          <div className={`px-2 py-1 rounded-lg flex items-center gap-1.5 text-xs font-semibold ${
+            posMode === "real" ? "bg-green-500/20 text-green-300"
+            : posMode === "demo" ? "bg-amber-500/20 text-amber-300"
+            : "bg-white/10 text-red-200"
+          }`}>
+            {posMode === "locating"
+              ? <span className="w-2.5 h-2.5 border-2 border-red-300 border-t-transparent rounded-full animate-spin" />
+              : <span>{posMode === "real" ? "📍" : "🏛️"}</span>}
+            {posMode === "locating" && "位置情報を取得中…"}
+            {posMode === "real" && "現在地を使用中"}
+            {posMode === "demo" && `デモ: ${userPos.lat.toFixed(4)}, ${userPos.lng.toFixed(4)}`}
+          </div>
+          {phase === "ready" && (
+            <button
+              onClick={randomizePatientPos}
+              className="bg-white/20 text-white text-xs font-bold px-2 py-1 rounded-lg active:opacity-60 flex items-center gap-1"
+            >
+              🎲 患者位置をランダム化
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Map — large */}
-      <div className="relative flex-shrink-0" style={{ height: 320 }}>
-        {phase === "locating" ? (
+      {fetchError && (
+        <div className="bg-amber-600 px-4 py-2 flex items-center gap-2 flex-shrink-0">
+          <p className="text-xs font-semibold text-amber-100">
+            ⚠️ オフライン保存済みAED（{aeds.length}台）を表示中
+          </p>
+        </div>
+      )}
+
+      {/* Map */}
+      <div className="relative flex-shrink-0" style={{ height: 240 }}>
+        {phase === "locating" && !fetchError ? (
           <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
             <div className="text-center">
               <div className="w-10 h-10 border-4 border-red-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
               <p className="text-xs text-gray-400">AEDデータを取得中…</p>
             </div>
           </div>
-        ) : (
+        ) : aeds.length > 0 ? (
           <>
-            <AEDMap
-              aeds={aeds}
-              userLat={userPos.lat}
-              userLng={userPos.lng}
-              topAEDs={topAEDs}
-            />
-            {/* GPS button — floating on map */}
+            <AEDMap aeds={aeds} userLat={userPos.lat} userLng={userPos.lng} topAEDs={topAEDs} />
             <button
               onClick={getGPS}
               disabled={gpsLoading}
               className="absolute bottom-3 right-3 z-[1000] bg-white shadow-lg rounded-xl px-3 py-2 flex items-center gap-1.5 text-xs font-semibold text-gray-800 border border-gray-200 disabled:opacity-60"
             >
-              {gpsLoading ? (
-                <span className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-              ) : (
-                <span>📍</span>
-              )}
-              現在地を取得
+              {gpsLoading
+                ? <span className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                : <span>📍</span>}
+              現在地を再取得
             </button>
           </>
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
+            <p className="text-gray-400 text-sm">オフラインデータなし</p>
+          </div>
         )}
       </div>
 
-      {/* Rank tabs */}
-      {topAEDs.length > 0 && (
-        <div className="flex gap-2 px-4 pt-3 pb-1 flex-shrink-0">
-          {topAEDs.map((aed) => (
-            <button
-              key={aed.id}
-              onClick={() => setActiveRank(aed.rank)}
-              className="flex-1 py-2 rounded-xl text-xs font-bold border transition-all"
-              style={activeRank === aed.rank
-                ? { background: RANK_COLORS[aed.rank - 1], borderColor: "transparent", color: "white" }
-                : { background: "#1f2937", borderColor: "#374151", color: "#9ca3af" }
-              }
-            >
-              {aed.rank}位 · {aed.distanceM}m
-            </button>
-          ))}
+      {/* Primary action — full width */}
+      <div className="px-4 pt-4 pb-2 flex-shrink-0 space-y-2">
+        <button
+          onClick={async () => {
+            try { localStorage.setItem("emergency_patient_pos", JSON.stringify(userPos)); } catch {}
+            // Notify nearby doctors on button press
+            setNotifying(true);
+            try {
+              const res = await fetch("/api/emergency", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ lat: userPos.lat, lng: userPos.lng, notifyDoctors: true }),
+              });
+              const d = await res.json() as { doctorsNotified: number };
+              setDoctorsNotified(d.doctorsNotified);
+            } catch { /* proceed anyway */ }
+            setNotifying(false);
+            router.push("/cpr");
+          }}
+          disabled={notifying}
+          className="w-full py-5 rounded-2xl font-bold text-xl bg-orange-600 active:bg-orange-700 flex items-center justify-center gap-3 shadow-lg disabled:opacity-80"
+        >
+          {notifying
+            ? <><span className="w-7 h-7 border-4 border-white border-t-transparent rounded-full animate-spin" /> 医師に通知中…</>
+            : <><span className="text-3xl">🤲</span>患者を助ける（音声ガイド＋119）</>}
+        </button>
+        <button
+          onClick={() => setShowShare(true)}
+          className="w-full py-3 rounded-2xl font-bold text-base bg-blue-700 active:bg-blue-800 flex items-center justify-center gap-2 shadow-md"
+        >
+          <span className="text-xl">📲</span>
+          近くの人にAED取得を依頼する（QR）
+        </button>
+        {notified && doctorsNotified === null && (
+          <p className="text-center text-green-400/70 text-xs pt-1">
+            📡 緊急位置を登録済み — 患者を助けるボタンで医師に通知されます
+          </p>
+        )}
+        {doctorsNotified !== null && (
+          <div className="rounded-2xl border px-4 py-3 flex items-start gap-3 bg-green-900/40 border-green-500/30">
+            <span className="text-2xl flex-shrink-0">🩺</span>
+            <div>
+              {doctorsNotified > 0
+                ? <>
+                    <p className="text-green-300 font-black text-base leading-tight">
+                      近くの登録医師 {doctorsNotified}人 に通知しました
+                    </p>
+                    <p className="text-green-400/80 text-xs mt-0.5">
+                      医師が現場に向かっています。CPRを続けてください。
+                    </p>
+                  </>
+                : <>
+                    <p className="text-amber-300 font-black text-base leading-tight">
+                      付近に登録医師が見つかりませんでした
+                    </p>
+                    <p className="text-amber-400/70 text-xs mt-0.5">
+                      （800m圏内に位置情報共有中の医師なし）
+                    </p>
+                  </>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Share sheet — show QR for /respond URL */}
+      {showShare && (
+        <div
+          className="fixed inset-0 bg-black/70 z-50 flex items-end"
+          onClick={() => setShowShare(false)}
+        >
+          <div
+            className="w-full bg-gray-900 rounded-t-3xl px-5 pt-5 pb-10"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <p className="font-black text-white text-lg">近くの人に見せる</p>
+                <p className="text-gray-400 text-xs">QRを読み取ると患者の場所＋AEDを案内します</p>
+              </div>
+              <button onClick={() => setShowShare(false)} className="text-gray-500 text-2xl leading-none">✕</button>
+            </div>
+            <div className="bg-white rounded-2xl p-5 flex flex-col items-center gap-3">
+              <QRCode
+                value={`${typeof window !== "undefined" ? window.location.origin : ""}/respond?lat=${userPos.lat}&lng=${userPos.lng}`}
+                size={200}
+              />
+              <p className="text-gray-500 text-xs text-center break-all">
+                /respond?lat={userPos.lat.toFixed(5)}&lng={userPos.lng.toFixed(5)}
+              </p>
+            </div>
+            <div className="mt-4 bg-blue-900/40 border border-blue-500/30 rounded-xl px-4 py-3">
+              <p className="text-blue-300 text-sm font-bold">📢 声かけ例</p>
+              <p className="text-white text-sm mt-1">
+                「このQRを読んで、一番近いAEDを取ってきてここに戻ってください！」
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Selected AED detail */}
-      <div className="px-4 pt-2 flex-shrink-0">
-        {target ? (
-          <div className={`rounded-xl p-4 border ${
-            target.accessible ? "border-green-500/30 bg-green-900/20" : "border-red-500/30 bg-red-900/20"
-          }`}>
-            <div className="flex items-start gap-3">
-              <div
-                className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-base flex-shrink-0"
-                style={{ background: RANK_COLORS[(target.rank ?? 1) - 1] }}
-              >
-                {target.rank}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <p className="font-bold text-sm">{target.name}</p>
-                  <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0 ${
-                    target.accessible ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
-                  }`}>
-                    {target.accessible ? "✅ 使用可" : "🔒 施錠中"}
-                  </span>
+      {/* AED list — TOP 3 */}
+      <div className="px-4 pt-2 pb-2 flex-shrink-0">
+        {phase === "locating" && !fetchError
+          ? <div className="rounded-2xl bg-gray-800 animate-pulse h-52" />
+          : (() => {
+              const now = new Date();
+              const isBusinessHours = now.getHours() >= 9 && now.getHours() < 17;
+              return (
+                <div className="rounded-2xl overflow-hidden border border-white/10">
+                  {topAEDs.map((aed) => {
+                    const color = RANK_COLORS[aed.rank - 1] ?? "#6b7280";
+                    const tips = getTipsForAED(aed.id);
+                    const summary = getTipSummary(aed.id);
+                    const access = getAEDAccess(aed.id);
+                    const landmark = summary ?? tips[0]?.text ?? null;
+
+                    // Security check: locked tag OR CSV says inaccessible
+                    const isSecurity = access?.level === "locked" || (!access && !aed.accessible);
+                    // Selectable if not security, or if security but within business hours
+                    const canSelect = !isSecurity || isBusinessHours;
+
+                    const accessLabel = access?.level === "easy"
+                      ? { icon: "✅", text: "屋外・24h", cls: "text-green-400" }
+                      : access?.level === "caution"
+                      ? { icon: "🏛️", text: "施設内", cls: "text-amber-400" }
+                      : isSecurity
+                      ? { icon: "🔒", text: isBusinessHours ? "施設内（開館時間内）" : "施設内（現在施錠中）", cls: isBusinessHours ? "text-amber-300" : "text-red-400" }
+                      : { icon: "✅", text: "使用可", cls: "text-green-400" };
+
+                    const rowBg = isSecurity && !canSelect
+                      ? "rgba(100,100,100,0.15)"
+                      : access?.level === "caution"
+                      ? "rgba(245,158,11,0.10)"
+                      : color + "18";
+
+                    const rankColor = isSecurity && !canSelect ? "#6b7280" : color;
+
+                    return (
+                      <div
+                        key={aed.id}
+                        className={`flex items-stretch border-b border-white/10 last:border-0 ${isSecurity && !canSelect ? "opacity-60" : ""}`}
+                        style={{ background: rowBg }}
+                      >
+                        {/* Rank stripe */}
+                        <div
+                          className="flex-shrink-0 w-10 self-stretch flex items-center justify-center font-black text-2xl text-white"
+                          style={{ background: rankColor }}
+                        >
+                          {isSecurity && !canSelect ? "🔒" : aed.rank}
+                        </div>
+
+                        {/* Info */}
+                        <div className="flex-1 min-w-0 px-3 py-2.5">
+                          <p className="font-black text-xl leading-tight truncate" style={{ color: rankColor }}>
+                            {aed.distanceM}m{" "}
+                            <span className={`text-sm font-bold ${accessLabel.cls}`}>
+                              {accessLabel.icon} {accessLabel.text}
+                            </span>
+                          </p>
+                          <p className="text-white font-black text-base leading-tight truncate">
+                            🏢 {aed.name}
+                            {aed.installLocation
+                              ? <span className="text-amber-300">　📌 {aed.installLocation}</span>
+                              : null}
+                          </p>
+                          {landmark && (
+                            <p className="text-white font-bold text-sm leading-tight truncate">💬 {landmark}</p>
+                          )}
+                          {/* Security explanation */}
+                          {isSecurity && !canSelect && (
+                            <p className="text-red-300 text-xs font-bold mt-1 leading-snug">
+                              ⚠️ 現在施錠中の可能性。9:00〜17:00のみ選択可。
+                            </p>
+                          )}
+                          {isSecurity && canSelect && (
+                            <p className="text-amber-300 text-xs font-bold mt-1 leading-snug">
+                              🏛️ 開館時間内のため使用可（セキュリティ施設）
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Map — disabled if not selectable */}
+                        {canSelect
+                          ? (
+                            <a
+                              href={`https://www.google.com/maps/dir/?api=1&destination=${aed.lat},${aed.lng}&travelmode=walking`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex-shrink-0 flex flex-col items-center justify-center px-3 gap-0.5 self-stretch bg-white/5 border-l border-white/10 text-gray-300"
+                            >
+                              <span className="text-2xl">🗺️</span>
+                              <span className="text-xs">経路</span>
+                            </a>
+                          ) : (
+                            <div className="flex-shrink-0 flex flex-col items-center justify-center px-3 gap-0.5 self-stretch bg-white/5 border-l border-white/10 text-gray-600">
+                              <span className="text-2xl">🚫</span>
+                              <span className="text-xs">施錠中</span>
+                            </div>
+                          )}
+                      </div>
+                    );
+                  })}
                 </div>
-                {target.installLocation && (
-                  <p className="text-amber-400 text-xs font-semibold mt-1">📌 {target.installLocation}</p>
-                )}
-                <p className="text-gray-400 text-xs mt-0.5 truncate">{target.address}</p>
-                <p className="text-white font-bold text-sm mt-1">約 {target.distanceM}m</p>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="rounded-xl h-20 bg-gray-800 animate-pulse" />
-        )}
+              );
+            })()}
       </div>
 
-      {/* Action buttons */}
-      <div className="px-4 pt-3 pb-6 space-y-2 flex-shrink-0">
-        <div className="grid grid-cols-3 gap-2">
-          <button
-            onClick={() => router.push("/cpr")}
-            className="py-4 rounded-xl font-bold text-xs bg-orange-600 active:bg-orange-700 flex flex-col items-center gap-1"
-          >
-            <span className="text-2xl">🤲</span>
-            救助する
-          </button>
-          <button
-            onClick={handle119}
-            className={`py-4 rounded-xl font-bold text-xs flex flex-col items-center gap-1 ${
-              called119 ? "bg-green-700" : "bg-red-600 active:bg-red-700"
-            }`}
-          >
-            <span className="text-2xl">📞</span>
-            {called119 ? "通報済み" : "119通報"}
-          </button>
-          <a
-            href={target
-              ? `https://www.google.com/maps/dir/?api=1&destination=${target.lat},${target.lng}&travelmode=walking`
-              : "#"}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="py-4 rounded-xl font-bold text-xs bg-blue-600 flex flex-col items-center gap-1 text-center"
-          >
-            <span className="text-2xl">🗺️</span>
-            経路案内
-          </a>
-        </div>
-        <button onClick={() => router.push("/")} className="w-full py-2 text-gray-600 text-xs">
-          平時モードに戻る
-        </button>
-      </div>
+      <button onClick={() => router.replace("/")} className="pb-6 pt-4 text-center text-gray-600 text-xs mt-auto">
+        平時モードに戻る
+      </button>
     </div>
   );
 }

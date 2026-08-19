@@ -5,16 +5,16 @@ export interface AEDLocation {
   id: string;
   name: string;
   address: string;
-  installLocation: string; // e.g. "1階正面玄関受付横"
+  installLocation: string;
   lat: number;
   lng: number;
-  availableDays: string;  // e.g. "月火水木金土日"
-  startTime: string;      // e.g. "0:00"
-  endTime: string;        // e.g. "23:59"
-  accessible: boolean;    // accessible right now
+  availableDays: string;
+  startTime: string;
+  endTime: string;
+  accessible: boolean;
 }
 
-// Column indices from 中央区 AED CSV (Shift-JIS, confirmed from header)
+// 自治体標準オープンデータセット column layout (0-indexed)
 const COL = {
   NAME: 3,
   ADDRESS: 8,
@@ -26,8 +26,6 @@ const COL = {
   END_TIME: 29,
 } as const;
 
-const AED_CSV_URL = "https://www.city.chuo.lg.jp/documents/984/aed.csv";
-
 const DAY_MAP: Record<string, number> = {
   日: 0, 月: 1, 火: 2, 水: 3, 木: 4, 金: 5, 土: 6,
 };
@@ -36,20 +34,13 @@ function isAccessibleNow(days: string, start: string, end: string): boolean {
   const now = new Date();
   const dayOfWeek = now.getDay();
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
-
-  // No restriction info → assume accessible
   if (!days && !start && !end) return true;
-
-  // Check day availability
   if (days) {
-    const availableDayNums = [...days].map((c) => DAY_MAP[c]).filter((n) => n !== undefined);
-    if (availableDayNums.length > 0 && !availableDayNums.includes(dayOfWeek)) return false;
+    const nums = [...days].map((c) => DAY_MAP[c]).filter((n) => n !== undefined);
+    if (nums.length > 0 && !nums.includes(dayOfWeek)) return false;
   }
-
-  // "0:00" start and "0:00" end means 24-hour access
   if (start === "0:00" && end === "0:00") return true;
   if (!start || !end) return true;
-
   const [sh, sm] = start.split(":").map(Number);
   const [eh, em] = end.split(":").map(Number);
   if (sh === undefined || eh === undefined) return true;
@@ -58,47 +49,123 @@ function isAccessibleNow(days: string, start: string, end: string): boolean {
   return currentMinutes >= startMin && currentMinutes <= endMin;
 }
 
-export async function GET() {
-  try {
-    const res = await fetch(AED_CSV_URL, { next: { revalidate: 3600 } });
-    const buffer = await res.arrayBuffer();
-    const decoded = Iconv.decode(Buffer.from(buffer), "Shift_JIS");
-    const lines = decoded.split("\n").filter(Boolean);
+function inTokyo(lat: number, lng: number): boolean {
+  return lat >= 35.5 && lat <= 35.9 && lng >= 139.0 && lng <= 140.1;
+}
 
-    if (lines.length < 2) return NextResponse.json({ aeds: [], total: 0 });
+// Detect lat/lng column indices from header if non-standard
+function detectLatLng(header: string[]): { lat: number; lng: number } {
+  const latIdx = header.findIndex((h) => h.includes("緯度"));
+  const lngIdx = header.findIndex((h) => h.includes("経度"));
+  return {
+    lat: latIdx >= 0 ? latIdx : COL.LAT,
+    lng: lngIdx >= 0 ? lngIdx : COL.LNG,
+  };
+}
 
-    const aeds: AEDLocation[] = [];
+function parseCSV(text: string, wardId: string): AEDLocation[] {
+  const lines = text.split("\n").filter(Boolean);
+  if (lines.length < 2) return [];
 
-    for (let i = 1; i < lines.length; i++) {
-      const cols = lines[i].split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
-      if (cols.length < 16) continue;
+  const header = lines[0].split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
+  const { lat: latCol, lng: lngCol } = detectLatLng(header);
 
-      const lat = parseFloat(cols[COL.LAT] ?? "");
-      const lng = parseFloat(cols[COL.LNG] ?? "");
-      if (isNaN(lat) || isNaN(lng)) continue;
-      if (lat < 35.5 || lat > 35.8 || lng < 139.6 || lng > 140.0) continue;
+  const aeds: AEDLocation[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const row = lines[i].split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
+    if (row.length < Math.max(latCol, lngCol) + 1) continue;
 
-      const days = cols[COL.AVAILABLE_DAYS] ?? "";
-      const start = cols[COL.START_TIME] ?? "";
-      const end = cols[COL.END_TIME] ?? "";
+    const lat = parseFloat(row[latCol] ?? "");
+    const lng = parseFloat(row[lngCol] ?? "");
+    if (isNaN(lat) || isNaN(lng) || !inTokyo(lat, lng)) continue;
 
-      aeds.push({
-        id: `aed-${i}`,
-        name: cols[COL.NAME] || `AED設置場所 ${i}`,
-        address: cols[COL.ADDRESS] || "",
-        installLocation: cols[COL.INSTALL_LOCATION] || "",
-        lat,
-        lng,
-        availableDays: days,
-        startTime: start,
-        endTime: end,
-        accessible: isAccessibleNow(days, start, end),
-      });
-    }
+    const name = row[COL.NAME] || `AED ${wardId}-${i}`;
+    const address = row[COL.ADDRESS] || "";
+    const installLocation = row[COL.INSTALL_LOCATION] || "";
+    const days = row[COL.AVAILABLE_DAYS] || "";
+    const start = row[COL.START_TIME] || "";
+    const end = row[COL.END_TIME] || "";
 
-    return NextResponse.json({ aeds, total: aeds.length });
-  } catch (err) {
-    console.error("AED fetch error:", err);
-    return NextResponse.json({ error: "Failed to fetch AED data", aeds: [] }, { status: 500 });
+    aeds.push({
+      id: `${wardId}-${i}`,
+      name,
+      address,
+      installLocation,
+      lat,
+      lng,
+      availableDays: days,
+      startTime: start,
+      endTime: end,
+      accessible: isAccessibleNow(days, start, end),
+    });
   }
+  return aeds;
+}
+
+interface WardSource {
+  id: string;
+  url: string;
+  encoding?: "Shift_JIS" | "utf-8";
+}
+
+// Tokyo ward AED open data sources (自治体標準オープンデータセット準拠)
+const WARD_SOURCES: WardSource[] = [
+  { id: "chuo",             url: "https://www.city.chuo.lg.jp/documents/984/aed.csv", encoding: "Shift_JIS" },
+  { id: "koto",             url: "https://www.opendata.metro.tokyo.lg.jp/koto/131083_008_aed.csv" },
+  { id: "nerima",           url: "https://www.city.nerima.tokyo.jp/kusei/tokei/opendata/opendatasite/hokenfukushi/aed.files/131202_aed.csv" },
+  { id: "bunkyo",           url: "https://www.city.bunkyo.lg.jp/documents/6059/aedsettikasyoitiran.csv" },
+  { id: "sumida",           url: "https://www.city.sumida.lg.jp/kuseijoho/sumida_info/opendata/opendata_ichiran/aed_data.files/shisetsu_aed_20210818.csv" },
+  { id: "toshima",          url: "https://www.opendata.metro.tokyo.lg.jp/toyoshima/R4_aed.csv" },
+  { id: "koganei",          url: "https://www.opendata.metro.tokyo.lg.jp/koganei/08_aed.csv" },
+  { id: "komae",            url: "https://www.opendata.metro.tokyo.lg.jp/komae/132195_aed.csv" },
+  { id: "machida",          url: "https://www.city.machida.tokyo.jp/shisei/opendata/shisetsu/aed.files/132098_aed.csv" },
+  { id: "higashimurayama",  url: "https://www.opendata.metro.tokyo.lg.jp/higashimurayama/20240619_aed.csv" },
+  { id: "hamura",           url: "https://www.opendata.metro.tokyo.lg.jp/hamura/132276_aed.csv" },
+  { id: "akiruno",          url: "https://www.city.akiruno.tokyo.jp/cmsfiles/contents/0000015/15465/132284_aed.csv" },
+];
+
+async function fetchWard(source: WardSource): Promise<AEDLocation[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch(source.url, {
+      signal: controller.signal,
+      next: { revalidate: 3600 },
+    } as RequestInit & { next: { revalidate: number } });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buffer = await res.arrayBuffer();
+    const text = source.encoding === "Shift_JIS"
+      ? Iconv.decode(Buffer.from(buffer), "Shift_JIS")
+      : new TextDecoder("utf-8").decode(buffer);
+    return parseCSV(text, source.id);
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
+}
+
+// Remove AEDs within ~10m of an already-kept entry
+function deduplicateAEDs(all: AEDLocation[]): AEDLocation[] {
+  const kept: AEDLocation[] = [];
+  for (const aed of all) {
+    const dup = kept.some(
+      (k) => Math.abs(k.lat - aed.lat) < 0.0001 && Math.abs(k.lng - aed.lng) < 0.0001
+    );
+    if (!dup) kept.push(aed);
+  }
+  return kept;
+}
+
+export async function GET() {
+  const results = await Promise.allSettled(WARD_SOURCES.map(fetchWard));
+
+  const all: AEDLocation[] = [];
+  for (const r of results) {
+    if (r.status === "fulfilled") all.push(...r.value);
+    else console.warn("[AED API] Ward fetch failed:", (r.reason as Error)?.message ?? r.reason);
+  }
+
+  const aeds = deduplicateAEDs(all);
+  return NextResponse.json({ aeds, total: aeds.length });
 }

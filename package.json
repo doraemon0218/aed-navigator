@@ -10,13 +10,16 @@
   },
   "dependencies": {
     "@types/leaflet": "^1.9.22",
+    "@types/web-push": "^3.6.4",
     "csv-parse": "^7.0.2",
     "iconv-lite": "^0.7.3",
     "leaflet": "^1.9.4",
     "next": "16.3.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "react-leaflet": "^5.0.0"
+    "react-leaflet": "^5.0.0",
+    "react-qr-code": "^2.2.0",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
