@@ -60,18 +60,30 @@ function etaButtonsHtml(token: string, baseUrl: string) {
 
 async function sendDispatchEmail(
   resend: Resend,
-  invite: DoctorInvite & { distanceToAed: number; role: string; aedName: string; aedLat: number; aedLng: number },
+  invite: DoctorInvite & {
+    distanceToAed: number; role: string;
+    aedName: string; aedLat: number; aedLng: number;
+    responderLat: number; responderLng: number;
+  },
   patientLat: number,
   patientLng: number,
   baseUrl: string,
 ) {
   const roleInfo = ROLE_LABELS[invite.role as keyof typeof ROLE_LABELS] ?? ROLE_LABELS.doctor;
   const isDoctor = invite.role === "doctor";
-  const patientMapUrl = mapsUrl(patientLat, patientLng);
-  const aedMapUrl = mapsUrl(invite.aedLat, invite.aedLng);
   const distKm = (invite.distanceToAed / 1000).toFixed(1);
   const buttons = etaButtonsHtml(invite.token, baseUrl);
   const patientAddress = await reverseGeocode(patientLat, patientLng);
+
+  // Single route URL: responder → (AED waypoint for non-doctors) → patient
+  const origin = `${invite.responderLat},${invite.responderLng}`;
+  const destination = `${patientLat},${patientLng}`;
+  const routeUrl = isDoctor
+    ? `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=walking`
+    : `https://www.google.com/maps/dir/?api=1&origin=${origin}&waypoints=${invite.aedLat},${invite.aedLng}&destination=${destination}&travelmode=walking`;
+  const routeLabel = isDoctor
+    ? "🗺️ ルート案内を開く（あなた → 現場）"
+    : "🗺️ ルート案内を開く（あなた → AED → 現場）";
 
   const bodyHtml = isDoctor
     ? `
@@ -81,9 +93,9 @@ async function sendDispatchEmail(
         </div>
         <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:16px;margin:14px 0">
           <p style="margin:0 0 8px;font-weight:bold;color:#dc2626;font-size:15px">📍 ② 患者の発生場所</p>
-          <p style="margin:0 0 6px;font-size:14px;color:#374151;font-weight:bold">${patientAddress}</p>
-          <p style="margin:0 0 10px;font-size:13px;color:#374151">心停止の疑いがあります。直ちに現場へ向かってください。AEDは他の登録者が手配中です。</p>
-          <a href="${patientMapUrl}" style="display:inline-block;padding:10px 18px;background:#dc2626;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px">🗺️ Google Maps で開く</a>
+          <p style="margin:0 0 4px;font-size:16px;color:#111827;font-weight:bold">${patientAddress}</p>
+          <p style="margin:0 0 12px;font-size:13px;color:#374151">心停止の疑いがあります。直ちに現場へ向かってください。AEDは他の登録者が手配中です。</p>
+          <a href="${routeUrl}" style="display:inline-block;padding:12px 20px;background:#dc2626;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px">${routeLabel}</a>
         </div>`
     : `
         <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin:14px 0">
@@ -92,9 +104,8 @@ async function sendDispatchEmail(
         </div>
         <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:16px;margin:14px 0">
           <p style="margin:0 0 8px;font-weight:bold;color:#92400e;font-size:15px">📍 ② 患者の発生場所</p>
-          <p style="margin:0 0 6px;font-size:14px;color:#374151;font-weight:bold">${patientAddress}</p>
-          <p style="margin:0 0 10px;font-size:13px;color:#374151">付近で心停止の疑いがある患者が発生しました。急いでください。</p>
-          <a href="${patientMapUrl}" style="display:inline-block;padding:10px 18px;background:#d97706;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px">🗺️ Google Maps で開く</a>
+          <p style="margin:0 0 4px;font-size:16px;color:#111827;font-weight:bold">${patientAddress}</p>
+          <p style="margin:0 0 12px;font-size:13px;color:#374151">付近で心停止の疑いがある患者が発生しました。急いでください。</p>
         </div>
         <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:16px;margin:14px 0">
           <p style="margin:0 0 8px;font-weight:bold;color:#15803d;font-size:15px">🔋 ③ AEDを持ってきてください</p>
@@ -103,7 +114,7 @@ async function sendDispatchEmail(
             📏 あなたからAEDまで：約 ${distKm} km<br>
             AEDを届けたら、心肺蘇生の補助をお願いします。
           </p>
-          <a href="${aedMapUrl}" style="display:inline-block;padding:10px 18px;background:#16a34a;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px">🗺️ AEDの場所を Google Maps で開く</a>
+          <a href="${routeUrl}" style="display:inline-block;padding:12px 20px;background:#16a34a;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px">${routeLabel}</a>
         </div>`;
 
   await resend.emails.send({
@@ -231,6 +242,8 @@ export async function POST(req: NextRequest) {
           aedName: r.assignedAed.aedName,
           aedLat: r.assignedAed.aedLat,
           aedLng: r.assignedAed.aedLng,
+          responderLat: r.lat,
+          responderLng: r.lng,
         }, lat, lng, baseUrl)
       )
     );
