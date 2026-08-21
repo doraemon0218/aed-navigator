@@ -14,6 +14,28 @@ function mapsUrl(lat: number, lng: number) {
   return `https://www.google.com/maps?q=${lat},${lng}`;
 }
 
+async function reverseGeocode(lat: number, lng: number): Promise<string> {
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=ja`,
+      { headers: { "User-Agent": "AED-Navigator/1.0" }, signal: AbortSignal.timeout(3000) },
+    );
+    if (!res.ok) return `緯度 ${lat.toFixed(4)}, 経度 ${lng.toFixed(4)}`;
+    const data = await res.json() as { address?: Record<string, string>; display_name?: string };
+    const a = data.address ?? {};
+    // Build compact address: prefecture + city/town + suburb/neighbourhood + road
+    const parts = [
+      a.state ?? a.prefecture,
+      a.city ?? a.town ?? a.village ?? a.county,
+      a.suburb ?? a.neighbourhood ?? a.quarter,
+      a.road ?? a.pedestrian,
+    ].filter(Boolean);
+    return parts.length > 0 ? parts.join(" ") : (data.display_name ?? `${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+  } catch {
+    return `緯度 ${lat.toFixed(4)}, 経度 ${lng.toFixed(4)}`;
+  }
+}
+
 function etaButtonsHtml(token: string, baseUrl: string) {
   const options = [
     { label: "3分",     value: 3 },
@@ -49,36 +71,39 @@ async function sendDispatchEmail(
   const aedMapUrl = mapsUrl(invite.aedLat, invite.aedLng);
   const distKm = (invite.distanceToAed / 1000).toFixed(1);
   const buttons = etaButtonsHtml(invite.token, baseUrl);
+  const patientAddress = await reverseGeocode(patientLat, patientLng);
 
   const bodyHtml = isDoctor
     ? `
-        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:16px;margin:14px 0">
-          <p style="margin:0 0 8px;font-weight:bold;color:#dc2626;font-size:15px">📍 ① 患者の発生場所</p>
-          <p style="margin:0 0 10px;font-size:13px;color:#374151">心停止の疑いがあります。直ちに現場へ向かってください。AEDは他の登録者が手配中です。</p>
-          <a href="${patientMapUrl}" style="display:inline-block;padding:10px 18px;background:#dc2626;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px">🗺️ 患者の場所を Google Maps で開く</a>
-        </div>
         <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin:14px 0">
-          <p style="margin:0 0 10px;font-weight:bold;color:#1e293b;font-size:15px">⏱️ ② 何分で到着できますか？（1分以内に回答）</p>
+          <p style="margin:0 0 10px;font-weight:bold;color:#1e293b;font-size:15px">⏱️ ① 対応可能ですか？何分で到着できますか？（1分以内に回答）</p>
           <div>${buttons}</div>
+        </div>
+        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:16px;margin:14px 0">
+          <p style="margin:0 0 8px;font-weight:bold;color:#dc2626;font-size:15px">📍 ② 患者の発生場所</p>
+          <p style="margin:0 0 6px;font-size:14px;color:#374151;font-weight:bold">${patientAddress}</p>
+          <p style="margin:0 0 10px;font-size:13px;color:#374151">心停止の疑いがあります。直ちに現場へ向かってください。AEDは他の登録者が手配中です。</p>
+          <a href="${patientMapUrl}" style="display:inline-block;padding:10px 18px;background:#dc2626;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px">🗺️ Google Maps で開く</a>
         </div>`
     : `
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin:14px 0">
+          <p style="margin:0 0 10px;font-weight:bold;color:#1e293b;font-size:15px">⏱️ ① 対応可能ですか？何分で到着できますか？（1分以内に回答）</p>
+          <div>${buttons}</div>
+        </div>
         <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:16px;margin:14px 0">
-          <p style="margin:0 0 8px;font-weight:bold;color:#92400e;font-size:15px">📍 ① 患者の発生場所</p>
+          <p style="margin:0 0 8px;font-weight:bold;color:#92400e;font-size:15px">📍 ② 患者の発生場所</p>
+          <p style="margin:0 0 6px;font-size:14px;color:#374151;font-weight:bold">${patientAddress}</p>
           <p style="margin:0 0 10px;font-size:13px;color:#374151">付近で心停止の疑いがある患者が発生しました。急いでください。</p>
-          <a href="${patientMapUrl}" style="display:inline-block;padding:10px 18px;background:#d97706;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px">🗺️ 患者の場所を Google Maps で開く</a>
+          <a href="${patientMapUrl}" style="display:inline-block;padding:10px 18px;background:#d97706;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px">🗺️ Google Maps で開く</a>
         </div>
         <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:16px;margin:14px 0">
-          <p style="margin:0 0 8px;font-weight:bold;color:#15803d;font-size:15px">🔋 ② AEDを持ってきてください</p>
+          <p style="margin:0 0 8px;font-weight:bold;color:#15803d;font-size:15px">🔋 ③ AEDを持ってきてください</p>
           <p style="margin:0 0 10px;font-size:13px;color:#374151">
             最寄りのAED「<strong>${invite.aedName}</strong>」を取得し、患者のもとへ届けてください。<br>
             📏 あなたからAEDまで：約 ${distKm} km<br>
             AEDを届けたら、心肺蘇生の補助をお願いします。
           </p>
           <a href="${aedMapUrl}" style="display:inline-block;padding:10px 18px;background:#16a34a;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px">🗺️ AEDの場所を Google Maps で開く</a>
-        </div>
-        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin:14px 0">
-          <p style="margin:0 0 10px;font-weight:bold;color:#1e293b;font-size:15px">⏱️ ③ 何分で到着できますか？（1分以内に回答）</p>
-          <div>${buttons}</div>
         </div>`;
 
   await resend.emails.send({
