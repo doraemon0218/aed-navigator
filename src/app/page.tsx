@@ -181,7 +181,17 @@ export default function DailyPage() {
       <div className="h-28" />
 
       {/* Emergency button — sticky */}
-      <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-gray-50 via-gray-50/90 to-transparent pt-6 pb-6 px-4 z-40">
+      <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-gray-50 via-gray-50/90 to-transparent pt-6 pb-6 px-4 z-40 space-y-2">
+        <button
+          onClick={() => router.push("/register")}
+          className="w-full py-3 rounded-2xl bg-white border border-gray-200 shadow-sm flex items-center justify-center gap-2 active:scale-98 transition-transform"
+        >
+          <span className="text-xl">🩺</span>
+          <div className="text-left">
+            <p className="font-bold text-gray-700 text-sm leading-tight">医療従事者として登録する</p>
+            <p className="text-gray-400 text-xs">緊急要請メールの受信対象になります</p>
+          </div>
+        </button>
         <button
           onClick={() => router.push("/emergency")}
           className="w-full py-5 rounded-2xl bg-red-600 shadow-[0_4px_20px_rgba(239,68,68,0.45)] flex items-center justify-center gap-3 active:scale-98 transition-transform"
