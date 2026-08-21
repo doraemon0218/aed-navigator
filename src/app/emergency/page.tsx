@@ -29,6 +29,8 @@ function randomNearby(base: { lat: number; lng: number }): { lat: number; lng: n
   return { lat: base.lat + dLat, lng: base.lng + dLng };
 }
 
+type DispatchPhase = "idle" | "sending" | "waiting" | "assigned" | "no_response";
+
 export default function EmergencyPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<"locating" | "ready">("locating");
@@ -40,14 +42,19 @@ export default function EmergencyPage() {
   const [posMode, setPosMode] = useState<"locating" | "real" | "demo">("locating");
   const [fetchError, setFetchError] = useState(false);
   const [showShare, setShowShare] = useState(false);
-  const [notified, setNotified] = useState(false);
-  const [doctorsNotified, setDoctorsNotified] = useState<number | null>(null);
-  const [notifying, setNotifying] = useState(false);
   const [responders, setResponders] = useState<ResponderMarker[]>([]);
-  const [dispatchStatus, setDispatchStatus] = useState("医療従事者自動アサイン中…");
+
+  // Doctor email dispatch state
+  const [dispatchPhase, setDispatchPhase] = useState<DispatchPhase>("idle");
+  const [dispatchId, setDispatchId] = useState<string | null>(null);
+  const [dispatchCountdown, setDispatchCountdown] = useState(60);
+  const [dispatchResponseCount, setDispatchResponseCount] = useState(0);
+  const [winner, setWinner] = useState<{ name: string; etaMinutes: number } | null>(null);
+
   const startTime = useRef(Date.now());
   const notifiedRef = useRef(false);
   const gpsPosRef = useRef(DEFAULT_POS);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     const id = setInterval(() => setElapsed(Math.floor((Date.now() - startTime.current) / 1000)), 1000);
@@ -74,28 +81,27 @@ export default function EmergencyPage() {
     }).catch(() => {});
   }, []);
 
-  const triggerBackendDispatch = useCallback(async (lat: number, lng: number) => {
-    try {
-      const res = await fetch("/api/emergency/dispatch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userLat: lat, userLng: lng }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.responders) {
-          setResponders(data.responders.map((r: {
-            id: string; name: string; role: "doctor" | "nurse" | "responder";
-            badge: string; lat: number; lng: number; status: string; task: string;
-          }) => ({ id: r.id, name: r.name, role: r.role, badge: r.badge, lat: r.lat, lng: r.lng, status: r.status, task: r.task })));
-          setDispatchStatus("近隣の登録医療従事者3名に自動出動通知＆タスク配信完了");
-        }
-      }
-    } catch {
-      // Graceful fallback
-    }
+  // Load demo doctors as responders for map display
+  useEffect(() => {
+    fetch("/api/doctor-location")
+      .then((r) => r.json())
+      .then((data) => {
+        const doctors = (data.doctors ?? []) as { clientId: string; name: string; lat: number; lng: number }[];
+        setResponders(doctors.map((d, i) => ({
+          id: d.clientId,
+          name: d.name,
+          role: i === 0 ? "doctor" : "nurse",
+          badge: i === 0 ? "👨‍⚕️ 救急医" : "👩‍⚕️ 麻酔科医",
+          lat: d.lat,
+          lng: d.lng,
+          status: "待機中",
+          task: "緊急出動待機中",
+        })));
+      })
+      .catch(() => {});
   }, []);
 
+  // Load AED data
   useEffect(() => {
     fetch("/api/aed")
       .then((r) => {
@@ -112,16 +118,14 @@ export default function EmergencyPage() {
           if (offline.length > 0) setFetchError(true);
         }
         setPhase("ready");
-        triggerBackendDispatch(DEFAULT_POS.lat, DEFAULT_POS.lng);
       })
       .catch(() => {
         const offline = getVerifiedAEDs();
         setAeds(offline);
         setFetchError(true);
         setPhase("ready");
-        triggerBackendDispatch(DEFAULT_POS.lat, DEFAULT_POS.lng);
       });
-  }, [triggerBackendDispatch]);
+  }, []);
 
   useEffect(() => {
     if (aeds.length === 0) return;
@@ -141,7 +145,7 @@ export default function EmergencyPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lat: userPos.lat, lng: userPos.lng, notifyDoctors: false }),
-      }).then(() => setNotified(true)).catch(() => {});
+      }).catch(() => {});
     }
   }, [userPos, aeds]);
 
@@ -163,6 +167,46 @@ export default function EmergencyPage() {
     );
   }, []);
 
+  // Poll dispatch status
+  const startPolling = useCallback((id: string) => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/doctor-dispatch?id=${id}`);
+        const data = await res.json() as {
+          status: string;
+          secondsLeft: number;
+          responseCount: number;
+          winner: { name: string; etaMinutes: number } | null;
+        };
+        setDispatchCountdown(data.secondsLeft);
+        setDispatchResponseCount(data.responseCount);
+        if (data.status === "assigned" && data.winner) {
+          setWinner(data.winner);
+          setDispatchPhase("assigned");
+          clearInterval(pollIntervalRef.current!);
+          // Update responders on map to show winner as active
+          setResponders((prev) => prev.map((r) =>
+            r.name === data.winner!.name
+              ? { ...r, status: `${data.winner!.etaMinutes}分で到着`, task: "現場へ急行中" }
+              : r
+          ));
+        } else if (data.status === "no_response") {
+          setDispatchPhase("no_response");
+          clearInterval(pollIntervalRef.current!);
+        } else {
+          setDispatchPhase("waiting");
+        }
+      } catch {
+        // keep polling
+      }
+    }, 5000);
+  }, []);
+
+  useEffect(() => {
+    return () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); };
+  }, []);
+
   const randomizePatientPos = useCallback(() => {
     setUserPos(randomNearby(gpsPosRef.current));
     setPosMode("demo");
@@ -180,12 +224,41 @@ export default function EmergencyPage() {
           setPosMode("real");
         } else setPosMode("demo");
         setGpsLoading(false);
-        triggerBackendDispatch(pos.lat, pos.lng);
       },
       () => setGpsLoading(false),
       { timeout: 8000, enableHighAccuracy: true }
     );
-  }, [triggerBackendDispatch]);
+  }, []);
+
+  const handleRescueButton = useCallback(async () => {
+    try { localStorage.setItem("emergency_patient_pos", JSON.stringify(userPos)); } catch {}
+    setDispatchPhase("sending");
+    try {
+      const aedTargets = topAEDs.slice(0, 3).map((a) => ({
+        aedId: a.id,
+        aedName: a.name,
+        aedLat: a.lat,
+        aedLng: a.lng,
+      }));
+      const res = await fetch("/api/doctor-dispatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lat: userPos.lat, lng: userPos.lng, topAEDs: aedTargets }),
+      });
+      const data = await res.json() as { dispatchId: string | null; responderCount: number };
+      if (data.dispatchId) {
+        setDispatchId(data.dispatchId);
+        setDispatchPhase("waiting");
+        startPolling(data.dispatchId);
+        try { localStorage.setItem("dispatch_id", data.dispatchId); } catch {}
+      } else {
+        setDispatchPhase("no_response");
+      }
+    } catch {
+      setDispatchPhase("no_response");
+    }
+    router.push("/cpr");
+  }, [userPos, router, startPolling]);
 
   const fmt = (s: number) => s < 60 ? `${s}秒` : `${Math.floor(s / 60)}分${s % 60}秒`;
 
@@ -241,19 +314,49 @@ export default function EmergencyPage() {
         </div>
       </div>
 
-      {/* Auto dispatch status banner */}
-      <div className="bg-purple-950 border-b border-purple-800 px-4 py-2 flex items-center justify-between text-xs overflow-hidden flex-shrink-0">
-        <div className="flex items-center gap-2 min-w-0 flex-1">
-          <span className="animate-ping text-purple-400 text-sm flex-shrink-0">📡</span>
-          <div className="min-w-0 flex-1">
-            <p className="font-bold text-purple-200 truncate">【自動ディスパッチ連動中】</p>
-            <p className="text-[11px] text-purple-300 leading-tight truncate">{dispatchStatus}</p>
+      {/* Dispatch status banner */}
+      {dispatchPhase !== "idle" && (
+        <div className={`px-4 py-2 flex items-center justify-between text-xs flex-shrink-0 ${
+          dispatchPhase === "assigned" ? "bg-green-900 border-b border-green-700"
+          : dispatchPhase === "no_response" ? "bg-gray-800 border-b border-gray-700"
+          : "bg-purple-950 border-b border-purple-800"
+        }`}>
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <span className={`text-sm flex-shrink-0 ${dispatchPhase === "waiting" ? "animate-ping" : ""}`}>
+              {dispatchPhase === "assigned" ? "✅" : dispatchPhase === "no_response" ? "⚠️" : "📡"}
+            </span>
+            <div className="min-w-0 flex-1">
+              {dispatchPhase === "sending" && (
+                <p className="text-purple-200 font-bold truncate">医師へメール送信中…</p>
+              )}
+              {dispatchPhase === "waiting" && (
+                <>
+                  <p className="text-purple-200 font-bold truncate">
+                    医師 {dispatchResponseCount}名が回答 — 締め切りまで {dispatchCountdown}秒
+                  </p>
+                  <p className="text-purple-300 text-[11px] truncate">Aさん（救急医）・Bさん（麻酔科医）にメール送信済み</p>
+                </>
+              )}
+              {dispatchPhase === "assigned" && winner && (
+                <>
+                  <p className="text-green-300 font-bold truncate">
+                    🩺 {winner.name}が {winner.etaMinutes}分で到着します
+                  </p>
+                  <p className="text-green-400 text-[11px] truncate">他の医師には感謝メールを送信しました</p>
+                </>
+              )}
+              {dispatchPhase === "no_response" && (
+                <p className="text-gray-300 font-bold truncate">付近に応答できる医師がいませんでした</p>
+              )}
+            </div>
           </div>
+          {dispatchPhase === "waiting" && (
+            <span className="text-[10px] bg-purple-800 text-purple-200 px-2 py-0.5 rounded-full font-bold flex-shrink-0 ml-2">
+              募集中
+            </span>
+          )}
         </div>
-        <span className="text-[10px] bg-purple-800 text-purple-200 px-2 py-0.5 rounded-full font-bold flex-shrink-0 ml-2">
-          自動出動中
-        </span>
-      </div>
+      )}
 
       {fetchError && (
         <div className="bg-amber-600 px-4 py-2 flex items-center gap-2 flex-shrink-0">
@@ -302,27 +405,13 @@ export default function EmergencyPage() {
       {/* Primary action */}
       <div className="px-4 pt-4 pb-2 flex-shrink-0 space-y-2">
         <button
-          onClick={async () => {
-            try { localStorage.setItem("emergency_patient_pos", JSON.stringify(userPos)); } catch {}
-            setNotifying(true);
-            try {
-              const res = await fetch("/api/emergency", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ lat: userPos.lat, lng: userPos.lng, notifyDoctors: true }),
-              });
-              const d = await res.json() as { doctorsNotified: number };
-              setDoctorsNotified(d.doctorsNotified);
-            } catch { /* proceed anyway */ }
-            setNotifying(false);
-            router.push("/cpr");
-          }}
-          disabled={notifying}
-          className="w-full py-5 rounded-2xl font-bold text-xl bg-orange-600 active:bg-orange-700 flex items-center justify-center gap-3 shadow-lg disabled:opacity-80"
+          onClick={handleRescueButton}
+          disabled={dispatchPhase !== "idle"}
+          className="w-full py-5 rounded-2xl font-bold text-xl bg-orange-600 active:bg-orange-700 flex items-center justify-center gap-3 shadow-lg disabled:opacity-60"
         >
-          {notifying
-            ? <><span className="w-7 h-7 border-4 border-white border-t-transparent rounded-full animate-spin" /> 医師に通知中…</>
-            : <><span className="text-3xl">🤲</span>患者を助ける（音声ガイド＋119）</>}
+          {dispatchPhase === "sending"
+            ? <><span className="w-7 h-7 border-4 border-white border-t-transparent rounded-full animate-spin" /> 医師へ連絡中…</>
+            : <><span className="text-3xl">🤲</span>患者を助ける（医師召集＋CPR）</>}
         </button>
         <button
           onClick={() => setShowShare(true)}
@@ -331,35 +420,6 @@ export default function EmergencyPage() {
           <span className="text-xl">📲</span>
           近くの人にAED取得を依頼する（QR）
         </button>
-        {notified && doctorsNotified === null && (
-          <p className="text-center text-green-400/70 text-xs pt-1">
-            📡 緊急位置を登録済み — 患者を助けるボタンで医師に通知されます
-          </p>
-        )}
-        {doctorsNotified !== null && (
-          <div className="rounded-2xl border px-4 py-3 flex items-start gap-3 bg-green-900/40 border-green-500/30">
-            <span className="text-2xl flex-shrink-0">🩺</span>
-            <div>
-              {doctorsNotified > 0
-                ? <>
-                    <p className="text-green-300 font-black text-base leading-tight">
-                      近くの登録医師 {doctorsNotified}人 に通知しました
-                    </p>
-                    <p className="text-green-400/80 text-xs mt-0.5">
-                      医師が現場に向かっています。CPRを続けてください。
-                    </p>
-                  </>
-                : <>
-                    <p className="text-amber-300 font-black text-base leading-tight">
-                      付近に登録医師が見つかりませんでした
-                    </p>
-                    <p className="text-amber-400/70 text-xs mt-0.5">
-                      （800m圏内に位置情報共有中の医師なし）
-                    </p>
-                  </>}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Share sheet — QR for /respond URL */}

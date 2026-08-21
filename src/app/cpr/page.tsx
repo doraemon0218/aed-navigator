@@ -730,10 +730,13 @@ export default function CPRPage() {
   const [sirenActive, setSirenActive] = useState(false);
   const [flash, setFlash] = useState(false);
   const [padPhase, setPadPhase] = useState<0 | 1 | 2>(0);
+  const [doctorWinner, setDoctorWinner] = useState<{ name: string; etaMinutes: number } | null>(null);
+  const [showDoctorBanner, setShowDoctorBanner] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sirenStopRef = useRef<(() => void) | null>(null);
   const audioCtxRef = useRef<AudioCtxType | null>(null);
+  const dispatchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     try {
@@ -742,6 +745,48 @@ export default function CPRPage() {
       const pos = localStorage.getItem("emergency_patient_pos");
       if (pos) setPatientPos(JSON.parse(pos));
     } catch {}
+  }, []);
+
+  // Poll for doctor assignment and show banner when confirmed
+  useEffect(() => {
+    let dispatchId: string | null = null;
+    try { dispatchId = localStorage.getItem("dispatch_id"); } catch {}
+    if (!dispatchId) return;
+
+    let shownResponse = false;
+
+    dispatchPollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/doctor-dispatch?id=${dispatchId}`);
+        const data = await res.json() as {
+          status: string;
+          latestResponse: { name: string; etaMinutes: number } | null;
+          winner: { name: string; etaMinutes: number } | null;
+        };
+
+        // Show banner as soon as any doctor responds (within 1-min window)
+        if (!shownResponse && data.latestResponse) {
+          shownResponse = true;
+          setDoctorWinner(data.latestResponse);
+          setShowDoctorBanner(true);
+        }
+
+        // Update with confirmed winner after finalization
+        if (data.status === "assigned" && data.winner) {
+          setDoctorWinner(data.winner);
+          setShowDoctorBanner(true);
+          clearInterval(dispatchPollRef.current!);
+          try { localStorage.removeItem("dispatch_id"); } catch {}
+        } else if (data.status === "no_response") {
+          clearInterval(dispatchPollRef.current!);
+          try { localStorage.removeItem("dispatch_id"); } catch {}
+        }
+      } catch {
+        // keep polling
+      }
+    }, 5000);
+
+    return () => { if (dispatchPollRef.current) clearInterval(dispatchPollRef.current); };
   }, []);
 
   const getAudioCtx = useCallback((): AudioCtxType | null => {
@@ -992,6 +1037,34 @@ export default function CPRPage() {
       className="min-h-screen text-white flex flex-col transition-colors duration-300"
       style={{ background: bgColor }}
     >
+      {/* Doctor arrival banner — shown when a doctor confirms ETA */}
+      {showDoctorBanner && doctorWinner && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 px-6"
+          onClick={() => setShowDoctorBanner(false)}
+        >
+          <div
+            className="w-full max-w-sm bg-gray-900 rounded-3xl p-6 text-center shadow-[0_0_60px_rgba(34,197,94,0.5)] border-2 border-green-500"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-6xl mb-3 animate-bounce">🩺</div>
+            <p className="text-green-400 font-black text-2xl leading-tight mb-1">
+              医師が {doctorWinner.etaMinutes} 分以内に<br />来てくれます！
+            </p>
+            <p className="text-white font-bold text-lg mt-2">
+              {doctorWinner.name}
+            </p>
+            <p className="text-gray-400 text-sm mt-1 mb-5">現場へ急行中</p>
+            <p className="text-yellow-300 font-black text-xl">頑張って！💪</p>
+            <button
+              onClick={() => setShowDoctorBanner(false)}
+              className="mt-5 w-full py-3 rounded-2xl bg-green-600 font-bold text-white text-base"
+            >
+              CPRを続ける
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className={`px-4 py-3 flex items-center justify-between transition-colors ${headerBg}`}>
         <div className="flex items-center gap-2">
@@ -1021,6 +1094,14 @@ export default function CPRPage() {
         {isSirenStep && (
           <button onClick={() => { stopSiren(); advance(); }} className="text-xs bg-white/20 px-3 py-1.5 rounded-full font-semibold">
             停止 →
+          </button>
+        )}
+        {!isSirenStep && doctorWinner && (
+          <button
+            onClick={() => setShowDoctorBanner(true)}
+            className="text-xs bg-green-500/20 border border-green-500/40 text-green-300 px-2 py-1 rounded-full font-bold flex items-center gap-1"
+          >
+            🩺 {doctorWinner.etaMinutes}分
           </button>
         )}
       </div>

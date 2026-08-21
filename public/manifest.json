@@ -1,0 +1,17 @@
+{
+  "name": "AED Navigator",
+  "short_name": "AED Nav",
+  "description": "院外心停止の空白の8分間を埋める",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#030712",
+  "theme_color": "#030712",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ]
+}
