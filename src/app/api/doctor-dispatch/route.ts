@@ -71,7 +71,8 @@ async function sendDispatchEmail(
           <p style="margin:0 0 8px;font-weight:bold;color:#15803d;font-size:15px">🔋 ② AEDを持ってきてください</p>
           <p style="margin:0 0 10px;font-size:13px;color:#374151">
             最寄りのAED「<strong>${invite.aedName}</strong>」を取得し、患者のもとへ届けてください。<br>
-            📏 あなたからAEDまで：約 ${distKm} km
+            📏 あなたからAEDまで：約 ${distKm} km<br>
+            AEDを届けたら、心肺蘇生の補助をお願いします。
           </p>
           <a href="${aedMapUrl}" style="display:inline-block;padding:10px 18px;background:#16a34a;color:white;border-radius:8px;text-decoration:none;font-weight:bold;font-size:14px">🗺️ AEDの場所を Google Maps で開く</a>
         </div>

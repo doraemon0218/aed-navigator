@@ -16,7 +16,7 @@ export interface DoctorPresence {
 export const ROLE_LABELS: Record<MedicalRole, { label: string; badge: string; task: string }> = {
   doctor:    { label: "医師",       badge: "👨‍⚕️ 医師",       task: "現場直行：胸骨圧迫・救命指導" },
   nurse:     { label: "看護師",     badge: "👩‍⚕️ 看護師",     task: "AED確保＆現場搬送サポート" },
-  student:   { label: "医学生",     badge: "🎓 医学生",       task: "AED取得＆現場搬送" },
+  student:   { label: "医学生",     badge: "🎓 医学生",       task: "AED確保＆心肺蘇生補助" },
   paramedic: { label: "救急救命士", badge: "🚑 救急救命士",   task: "119連携・救急車誘導" },
 };
 
