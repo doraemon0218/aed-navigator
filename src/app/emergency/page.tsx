@@ -14,16 +14,18 @@ import type { ResponderMarker } from "@/components/AEDMap";
 
 const AEDMap = dynamic(() => import("@/components/AEDMap"), { ssr: false });
 
-const DEFAULT_POS = { lat: 35.670599, lng: 139.77201 };
+// 中央区庁舎（築地1-1-1）
+const DEFAULT_POS = { lat: 35.6663, lng: 139.7723 };
 const RANK_COLORS = ["#ef4444", "#f97316", "#3b82f6"] as const;
 
 function isInChuo(lat: number, lng: number) {
   return lat >= 35.64 && lat <= 35.71 && lng >= 139.74 && lng <= 139.81;
 }
 
+// 徒歩圏内（150〜400m）でランダムに患者位置を生成
 function randomNearby(base: { lat: number; lng: number }): { lat: number; lng: number } {
   const angle = Math.random() * 2 * Math.PI;
-  const radius = 80 + Math.random() * 40;
+  const radius = 150 + Math.random() * 250;
   const dLat = (radius * Math.cos(angle)) / 111111;
   const dLng = (radius * Math.sin(angle)) / (111111 * Math.cos(base.lat * Math.PI / 180));
   return { lat: base.lat + dLat, lng: base.lng + dLng };

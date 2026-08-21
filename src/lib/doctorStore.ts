@@ -25,14 +25,17 @@ const TTL_MS = 5 * 60 * 1000;
 const _doctors = new Map<string, DoctorPresence>();
 
 // Demo registrants — always active for hackathon demo
+// 中央区庁舎（35.6663, 139.7723）周辺の固定自宅位置
+// A: 築地4丁目付近（庁舎から北東 約350m）
+// B: 明石町付近（庁舎から西 約300m）
 const DEMO_DOCTORS: DoctorPresence[] = [
   {
     clientId: "demo-doctor-1",
     name: "Aさん（看護師）",
     email: "aiyam.doraemon@gmail.com",
     role: "nurse",
-    lat: 35.6712,
-    lng: 139.7711,
+    lat: 35.6693,
+    lng: 139.7758,
     ts: 0,
     pushSub: null,
   },
@@ -41,8 +44,8 @@ const DEMO_DOCTORS: DoctorPresence[] = [
     name: "Bさん（医学生）",
     email: "y.aiyama.0218@gmail.com",
     role: "student",
-    lat: 35.6698,
-    lng: 139.7729,
+    lat: 35.6648,
+    lng: 139.7692,
     ts: 0,
     pushSub: null,
   },
@@ -51,8 +54,8 @@ const DEMO_DOCTORS: DoctorPresence[] = [
     name: "Aさん（医師）",
     email: "aiyam.doraemon@gmail.com",
     role: "doctor",
-    lat: 35.6712,
-    lng: 139.7711,
+    lat: 35.6693,
+    lng: 139.7758,
     ts: 0,
     pushSub: null,
   },
@@ -61,8 +64,8 @@ const DEMO_DOCTORS: DoctorPresence[] = [
     name: "Bさん（医師）",
     email: "y.aiyama.0218@gmail.com",
     role: "doctor",
-    lat: 35.6698,
-    lng: 139.7729,
+    lat: 35.6648,
+    lng: 139.7692,
     ts: 0,
     pushSub: null,
   },
