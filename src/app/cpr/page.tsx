@@ -732,6 +732,9 @@ export default function CPRPage() {
   const [padPhase, setPadPhase] = useState<0 | 1 | 2>(0);
   const [doctorWinner, setDoctorWinner] = useState<{ name: string; etaMinutes: number } | null>(null);
   const [showDoctorBanner, setShowDoctorBanner] = useState(false);
+  const [showToast, setShowToast] = useState(false);
+  const [toastVisible, setToastVisible] = useState(false);
+  const [notifFlash, setNotifFlash] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sirenStopRef = useRef<(() => void) | null>(null);
@@ -764,17 +767,24 @@ export default function CPRPage() {
           winner: { name: string; etaMinutes: number } | null;
         };
 
-        // Show banner as soon as any doctor responds (within 1-min window)
+        const notify = (winner: { name: string; etaMinutes: number }) => {
+          setDoctorWinner(winner);
+          setShowToast(true);
+          triggerNotifFlash();
+          const ctx = audioCtxRef.current;
+          if (ctx) playChime(ctx);
+          setTimeout(() => setShowToast(false), 9000);
+        };
+
+        // Show toast as soon as any doctor responds (within 1-min window)
         if (!shownResponse && data.latestResponse) {
           shownResponse = true;
-          setDoctorWinner(data.latestResponse);
-          setShowDoctorBanner(true);
+          notify(data.latestResponse);
         }
 
         // Update with confirmed winner after finalization
         if (data.status === "assigned" && data.winner) {
           setDoctorWinner(data.winner);
-          setShowDoctorBanner(true);
           clearInterval(dispatchPollRef.current!);
           try { localStorage.removeItem("dispatch_id"); } catch {}
         } else if (data.status === "no_response") {
@@ -787,6 +797,46 @@ export default function CPRPage() {
     }, 5000);
 
     return () => { if (dispatchPollRef.current) clearInterval(dispatchPollRef.current); };
+  }, []);
+
+  // Toast slide-in animation
+  useEffect(() => {
+    if (showToast) {
+      const t = setTimeout(() => setToastVisible(true), 30);
+      return () => clearTimeout(t);
+    } else {
+      setToastVisible(false);
+    }
+  }, [showToast]);
+
+  const playChime = useCallback((ctx: AudioCtxType) => {
+    if (ctx.state === "suspended") ctx.resume();
+    const notes = [523, 659, 784, 1047]; // C5 E5 G5 C6
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const t = ctx.currentTime + i * 0.17;
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.45, t + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+      osc.start(t);
+      osc.stop(t + 0.4);
+    });
+  }, []);
+
+  const triggerNotifFlash = useCallback(() => {
+    let count = 0;
+    const toggle = () => {
+      setNotifFlash((f) => !f);
+      count++;
+      if (count < 6) setTimeout(toggle, 150);
+      else setNotifFlash(false);
+    };
+    toggle();
   }, []);
 
   const getAudioCtx = useCallback((): AudioCtxType | null => {
@@ -1027,8 +1077,10 @@ export default function CPRPage() {
     : isAEDPhase ? "bg-yellow-600"
     : "bg-orange-600";
 
-  // Background color
-  const bgColor = flash
+  // Background color — green flash takes priority for arrival notification
+  const bgColor = notifFlash
+    ? "#052e16"
+    : flash
     ? (isAEDAnalyzeStep ? "#713f12" : "#7f1d1d")
     : "#030712";
 
@@ -1037,9 +1089,9 @@ export default function CPRPage() {
       className="min-h-screen text-white flex flex-col transition-colors duration-300"
       style={{ background: bgColor }}
     >
-      {/* Doctor arrival banner — shown when a doctor confirms ETA */}
+      {/* Doctor arrival — detail modal (tap from toast or header badge) */}
       {showDoctorBanner && doctorWinner && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 px-6"
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 px-6"
           onClick={() => setShowDoctorBanner(false)}
         >
           <div
@@ -1048,11 +1100,9 @@ export default function CPRPage() {
           >
             <div className="text-6xl mb-3 animate-bounce">🩺</div>
             <p className="text-green-400 font-black text-2xl leading-tight mb-1">
-              医師が {doctorWinner.etaMinutes} 分以内に<br />来てくれます！
+              応援者が {doctorWinner.etaMinutes} 分以内に<br />来てくれます！
             </p>
-            <p className="text-white font-bold text-lg mt-2">
-              {doctorWinner.name}
-            </p>
+            <p className="text-white font-bold text-lg mt-2">{doctorWinner.name}</p>
             <p className="text-gray-400 text-sm mt-1 mb-5">現場へ急行中</p>
             <p className="text-yellow-300 font-black text-xl">頑張って！💪</p>
             <button
@@ -1061,6 +1111,28 @@ export default function CPRPage() {
             >
               CPRを続ける
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Doctor arrival toast — slides up from bottom, doesn't block CPR animation */}
+      {showToast && doctorWinner && (
+        <div
+          className={`fixed bottom-0 left-0 right-0 z-[9998] px-4 pb-5 transition-transform duration-500 ease-out ${toastVisible ? "translate-y-0" : "translate-y-full"}`}
+          onClick={() => { setShowToast(false); setShowDoctorBanner(true); }}
+        >
+          <div className="bg-green-950 border-2 border-green-400 rounded-2xl px-4 py-3 shadow-[0_0_50px_rgba(34,197,94,0.7)] flex items-center gap-3">
+            <div className="text-4xl animate-bounce flex-shrink-0">🩺</div>
+            <div className="flex-1 min-w-0">
+              <p className="text-green-300 font-black text-base leading-tight">応援者が向かっています！</p>
+              <p className="text-white font-bold text-sm truncate">
+                {doctorWinner.name}　{doctorWinner.etaMinutes}分以内に到着
+              </p>
+            </div>
+            <div className="flex-shrink-0 text-right">
+              <p className="text-green-400 font-black text-xl leading-none">{doctorWinner.etaMinutes}<span className="text-xs">分</span></p>
+              <p className="text-gray-500 text-xs">詳細 ›</p>
+            </div>
           </div>
         </div>
       )}
