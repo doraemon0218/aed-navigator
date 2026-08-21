@@ -37,6 +37,9 @@ async function reverseGeocode(lat: number, lng: number): Promise<string> {
 }
 
 function etaButtonsHtml(token: string, baseUrl: string) {
+  const bypass = process.env.DISPATCH_BYPASS_SECRET
+    ? `&_vercel_bypass=${process.env.DISPATCH_BYPASS_SECRET}`
+    : "";
   const options = [
     { label: "3分",     value: 3 },
     { label: "5分",     value: 5 },
@@ -51,7 +54,7 @@ function etaButtonsHtml(token: string, baseUrl: string) {
   return options
     .map(({ label, value }) => {
       const eta = value === 0 ? "none" : String(value);
-      const url = `${baseUrl}/api/doctor-dispatch/respond?token=${token}&eta=${eta}`;
+      const url = `${baseUrl}/api/doctor-dispatch/respond?token=${token}&eta=${eta}${bypass}`;
       const color = value === 0 ? "#6b7280" : value <= 5 ? "#dc2626" : value <= 10 ? "#ea580c" : "#2563eb";
       return `<a href="${url}" style="${btnStyle(color)}">${label}</a>`;
     })
